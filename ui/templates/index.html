@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StemQuery — Adaptive Music Source Separation</title>
+  <meta name="description" content="Upload any music file. Our AI detects all present instruments and lets you extract exactly the stems you want." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="/static/wavesurfer.min.js"></script>
+</head>
+<body>
+
+<!-- ── Background ── -->
+<div class="bg-orbs">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+
+<!-- ── Header ── -->
+<header class="header">
+  <div class="logo">
+    <span class="logo-icon">🎵</span>
+    <span class="logo-text">StemQuery</span>
+  </div>
+  <p class="header-sub">Adaptive Multi-Source Music Separation</p>
+</header>
+
+<!-- ── Main Container ── -->
+<main class="container">
+
+  <!-- STEP 1: Upload -->
+  <section class="card" id="section-upload">
+    <div class="step-badge">01</div>
+    <h2>Upload Your Music</h2>
+    <p class="step-desc">Supports WAV, MP3, FLAC, OGG, M4A and video files (MP4, MKV, MOV, WEBM, AVI).</p>
+
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="file-input" accept=".wav,.mp3,.flac,.ogg,.m4a,.mp4,.mkv,.mov,.webm,.avi,.m4v" hidden />
+      <div class="drop-icon">🎶</div>
+      <div class="drop-text">Drag & drop your audio or video file here</div>
+      <div class="drop-sub">or</div>
+      <button class="btn btn-outline" id="browse-btn">Browse File</button>
+    </div>
+
+    <div class="selected-file hidden" id="selected-file">
+      <span class="file-icon">🎵</span>
+      <span id="file-name">filename.wav</span>
+      <button class="btn-icon" id="clear-file" title="Remove">✕</button>
+    </div>
+
+    <button class="btn btn-primary" id="detect-btn" disabled>
+      <span class="btn-icon-left">🔍</span>
+      Detect Stems
+    </button>
+  </section>
+
+  <!-- STEP 2: Detection Result -->
+  <section class="card hidden" id="section-detect">
+    <div class="step-badge">02</div>
+    <h2>Detected Stems</h2>
+    <p class="step-desc">These instruments were found in your audio. Select the ones you want to extract.</p>
+
+    <div class="stems-grid" id="stems-grid">
+      <!-- Populated by JS -->
+    </div>
+
+    <div class="prob-bars" id="prob-bars">
+      <!-- Confidence bars for all stems -->
+    </div>
+
+    <div class="selection-hint" id="selection-hint">
+      Select at least one stem above to continue.
+    </div>
+
+    <button class="btn btn-primary" id="separate-btn" disabled>
+      <span class="btn-icon-left">✂️</span>
+      Separate Selected Stems
+    </button>
+  </section>
+
+  <!-- STEP 3: Output with Synchronized A/B Comparison Player -->
+  <section class="card hidden" id="section-output">
+    <div class="step-badge">03</div>
+    <div class="output-header-flex">
+      <div>
+        <h2>Separated Audio & A/B Comparison</h2>
+        <p class="step-desc" id="output-desc">Combined output of your selected stems.</p>
+      </div>
+      <div class="ab-active-pill" id="ab-status-pill">
+        <span class="pulse-dot"></span>
+        <span id="ab-status-text">Playing: Separated Stems</span>
+      </div>
+    </div>
+
+    <!-- Dual Synchronized Waveform Visualizer & Transport -->
+    <div class="waveform-player-card">
+      
+      <!-- Track A: Original Mixture -->
+      <div class="waveform-track-block" id="track-block-orig">
+        <div class="track-header">
+          <div class="track-tag-group">
+            <span class="track-badge badge-orig">TRACK A</span>
+            <span class="track-title">Original Mixture</span>
+          </div>
+          <button class="btn-solo" id="solo-orig-btn" title="Listen to Original Mixture">
+            <span class="solo-icon">🎧</span> Listen to Original
+          </button>
+        </div>
+        <div class="waveform-canvas-wrap" id="waveform-orig"></div>
+      </div>
+
+      <!-- Track B: Separated Stem(s) -->
+      <div class="waveform-track-block active" id="track-block-sep">
+        <div class="track-header">
+          <div class="track-tag-group">
+            <span class="track-badge badge-sep">TRACK B</span>
+            <span class="track-title" id="sep-track-title">Isolated Stems</span>
+          </div>
+          <button class="btn-solo active" id="solo-sep-btn" title="Listen to Isolated Stems">
+            <span class="solo-icon">✨</span> Listen to Separated
+          </button>
+        </div>
+        <div class="waveform-canvas-wrap" id="waveform-sep"></div>
+      </div>
+
+      <!-- Master Transport Controls -->
+      <div class="player-transport-bar">
+        <div class="transport-section transport-left">
+          <button class="btn-transport-play" id="btn-play-pause" title="Play / Pause (Space)">
+            <span id="play-icon">▶</span>
+          </button>
+          <button class="btn-transport-sub" id="btn-restart" title="Restart track">
+            ⏮
+          </button>
+          <div class="time-readout">
+            <span id="time-current">0:00</span>
+            <span class="time-sep">/</span>
+            <span id="time-total">0:00</span>
+          </div>
+        </div>
+
+        <div class="transport-section transport-center">
+          <!-- A/B Comparison Switch -->
+          <div class="ab-toggle-switch">
+            <button class="ab-btn" id="toggle-ab-orig">
+              🎧 Original (A)
+            </button>
+            <button class="ab-btn-flip" id="toggle-ab-flip" title="Instant A/B Flip (Press 'S')">
+              ⇄ A/B Flip
+            </button>
+            <button class="ab-btn active" id="toggle-ab-sep">
+              ✨ Separated (B)
+            </button>
+          </div>
+          <span class="ab-hint">Hotkey: <strong>Space</strong> (Play) · <strong>S</strong> (A/B Swap)</span>
+        </div>
+
+        <div class="transport-section transport-right">
+          <div class="volume-control">
+            <button class="btn-volume" id="btn-volume" title="Mute/Unmute">🔊</button>
+            <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" title="Volume" />
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="output-actions">
+      <a class="btn btn-primary" id="download-btn" download="separated.wav">
+        <span class="btn-icon-left">⬇️</span>
+        Download Separated WAV
+      </a>
+      <a class="btn btn-outline hidden" id="download-video-btn" href="#">
+        <span class="btn-icon-left">🎬</span>
+        Download Video with this Audio
+      </a>
+      <button class="btn btn-outline" id="new-separation-btn">
+        Try Another Combination
+      </button>
+      <button class="btn btn-ghost" id="new-upload-btn">
+        Upload New File
+      </button>
+    </div>
+  </section>
+
+  <!-- Loading Overlay -->
+  <div class="loading-overlay hidden" id="loading-overlay">
+    <div class="loading-card">
+      <div class="spinner"></div>
+      <div class="loading-title" id="loading-title">Analysing audio…</div>
+      <div class="loading-sub" id="loading-sub">This may take a few seconds.</div>
+    </div>
+  </div>
+
+  <!-- Error Toast -->
+  <div class="toast hidden" id="error-toast">
+    <span class="toast-icon">⚠️</span>
+    <span id="toast-msg">An error occurred.</span>
+    <button class="toast-close" id="toast-close">✕</button>
+  </div>
+
+</main>
+
+<!-- ── Footer ── -->
+<footer class="footer">
+  <p>Query-Conditioned Deep Learning for Adaptive Multi-Source Music Separation</p>
+  <p class="footer-sub">8 Stems: Vocals · Drums · Bass · Guitar · Piano · Violin · Mridangam · Ghatam</p>
+</footer>
+
+<script src="/static/main.js"></script>
+</body>
+</html>

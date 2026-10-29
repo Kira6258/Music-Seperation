@@ -1,0 +1,395 @@
+% ============================================================================
+% Literature Report: Query-Conditioned Deep Learning for Adaptive
+% Multi-Source Music Separation
+%
+% Compile with:  pdflatex literature_report.tex   (run twice for links/citations)
+% Needs in the same folder: logo.png (Amrita logo)
+% Packages used are all in a standard TeX Live / MiKTeX install.
+% ============================================================================
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{mathptmx}                       % Times-like text and math
+\usepackage[top=1in,bottom=1in,left=1in,right=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{titlesec}
+\usepackage[numbers]{natbib}                % \cite{a,b} -> [1, 2]
+\usepackage{xurl}                           % allow long URLs to break
+\usepackage[colorlinks=true,linkcolor=black,citecolor=blue,urlcolor=blue,
+            pdftitle={Literature Report: Query-Conditioned Deep Learning for Adaptive Multi-Source Music Separation},
+            pdfauthor={Achintya TR, BJ Kiranesh, Hithesh R, Parinitha Kandula}]{hyperref}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+\linespread{1.15}
+\pagestyle{plain}
+\setlength{\bibsep}{0.4em}
+\renewcommand{\bibnumfmt}[1]{[#1]}
+
+% caption: "Table 1. text" above the table, italic, small
+\captionsetup[table]{font={small,it},labelfont={small,it},labelsep=period,justification=centering,singlelinecheck=false,skip=6pt}
+
+% headings: bold, same hierarchy as the original report
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\fontsize{12.5}{15}\selectfont\bfseries}{\thesubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.6em}{0.5em}
+\titlespacing*{\subsection}{0pt}{1.2em}{0.4em}
+
+% one paper heading: clickable [n] (jumps to the reference) + title, then its link
+\newcommand{\paperhead}[2]{\par\vspace{0.4em}\noindent{\bfseries\itshape \cite{#1}\ #2}\par\nopagebreak\vspace{-0.2em}}
+
+\begin{document}
+
+\begin{center}
+\includegraphics[width=0.40\textwidth]{logo.png}\\[1.2em]
+{\bfseries LITERATURE REPORT}\\[0.7em]
+{\Large\bfseries Query-Conditioned Deep Learning for Adaptive\\ Multi-Source Music Separation}\\[0.8em]
+Deep Learning (22AIE302), Department of AIE\\[0.6em]
+Achintya TR (CH.SC.U4AIE24003), BJ Kiranesh (CH.SC.U4AIE24006)\\[0.3em]
+Hithesh R (CH.SC.U4AIE24027), Parinitha Kandula (CH.SC.U4AIE24052)
+\end{center}
+
+\section{Introduction}
+
+Music source separation (MSS) is the task of recovering individual sources, such as vocals or drums, from a single mixed recording. Most MSS systems are trained for a fixed list of stems, usually vocals, drums, bass and a catch-all ``other'' category \cite{banquet}. The list is closed once training ends. A listener who wants a violin, a mridangam or a second guitar gets nothing from such a system, and the instruments that fall outside the four standard stems are exactly the ones that Western benchmarks left unlabelled.
+
+This project builds a query-conditioned separator that covers both Western and Carnatic instruments. The model receives a mixture and a query that names the target stem and returns only that stem. A small detector first reports which of eight instruments are present, so the user chooses from stems that exist. A single U-Net with feature-wise linear modulation (FiLM) is trained on MUSDB18 for the Western stems and on Saraga for vocals, violin, mridangam and ghatam. For vocals, drums, bass, guitar and piano the final system also uses a pretrained 6-source Demucs model as a backend, and a competitive mask divides every time-frequency bin among all sources so that unselected stems are suppressed.
+
+The question the project asks has three parts. Can one conditioned model cover Western and Carnatic stems? Does training on requests for absent stems make the model return silence instead of noise? Does sharing each bin among all sources reduce leakage? Query-conditioned music separation already exists for Western music \cite{banquet,hyperell,qscnet}, and fine-tuning separators for Carnatic music has been done with fixed outputs \cite{carnaticft,ssn}. No paper among those reviewed combines the two, and none studies what a music separator does when the requested stem is not in the song. Section 7 states the hypotheses and what the project measured.
+
+This report reviews 23 papers published between 2024 and 2026. They are grouped into five categories: query-conditioned separation (Category A), architectures and training for music separation (B), Indian art music and non-Western audio (C), data, bleed and training-set construction (D), and evaluation, surveys, tools and foundation models (E). For each paper the report states what was proposed, what evidence the authors give, what it means for this project and what it leaves open. The final sections compare the papers and set out the gaps the project addresses.
+
+\section{Scope and approach}
+
+The papers were collected into a literature survey table with a short description and a research gap for each entry. This report expands that table. Each paper is read against four questions that follow from the project objectives: how is the target specified (a class label, an audio example, text or nothing), is the system built for music or for general audio, what data and ground truth does it use and how clean are they, and what does it cost in parameters and compute.
+
+Three points of scope should be stated. First, depth varies. The full texts of \cite{banquet}, \cite{pmq}, \cite{sanidha} and \cite{ssn} were read, so those reviews give training settings, data splits and metrics. The other 19 descriptions come from abstracts and publication records. For those papers the report repeats what the abstract claims and says nothing about experimental settings or ablations, because the team has not checked them. The limitations listed for them are gaps identified from the abstracts, and the text words them that way.
+
+Second, several papers evaluate on general audio, orchestral recordings or speech, and their numbers are not comparable with MUSDB18 or Saraga results. Where this matters the text says so. Third, the query-based music papers \cite{banquet,hyperell,qscnet} report SNR on MoisesDB, while this project reports SI-SDR and SIR on MUSDB18 and Saraga. Their numbers give context and cannot serve as targets to match.
+
+One more boundary applies. The Demucs family of models, which the project uses as a pretrained backend, was published before 2024, so the architecture papers behind it are outside the review window and are not reviewed. Only the project's use of the released weights is described, in Section 6.
+
+\section{Review of the literature}
+
+\subsection{Category A: query-conditioned and conditioned source separation}
+
+These five papers are the closest to the project's method. All of them separate a source that the user specifies at inference time instead of producing a fixed set of stems. They differ in what the query is: an audio example, a region in an embedding space, a text prompt, or a list of class labels that may name sounds that are not present.
+
+\paperhead{banquet}{Banquet: a stem-agnostic single-decoder system for separation beyond four stems}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2406.18747}}\par\nopagebreak
+
+Banquet is a query-based separator that handles an arbitrary number of stems with one decoder \cite{banquet}. It extends a band-split model (Bandit) with a query pathway. A query is a 10 s clip of the target stem, embedded by a frozen PaSST model trained on OpenMIC-2018, averaged over time and projected down. A single FiLM layer then maps the mixture embedding to a stem-specific embedding, with scale and shift computed from the query by a two-layer network. The authors found that training the query encoder jointly was unstable, so it stays frozen, and that encoder pretraining stabilised training as the number of stems grew.
+
+Training uses MoisesDB, 240 songs from 47 artists, with a five-fold split by genre, 6 s chunks, up to 150 epochs and an L1SNR loss. The model has 24.9M trainable parameters. On the MoisesDB test set the authors report separation above the oracle ideal ratio mask for drums and bass, state of the art for guitar and piano, and at least 7.4 dB SNR for vocals, and they note that it approaches the much larger 6-stem HT Demucs. They computed SNR only, and state that SIR and SAR were not computed because the number of stems can be large and the required projection is unreliable.
+
+For this project the paper does three things. It documents the fixed-stem problem, it shows that a single decoder can serve many stems, and it fixes the conditioning mechanism at one FiLM layer on a bottleneck. The authors also argue that global conditioning suits a model with one stream of information and a clear bottleneck better than U-Net style models. That claim is the opposite of this project's design, and \cite{qscnet} tests it. The query is an audio clip from a Western corpus, and the paper does not examine Indian instruments or requests for absent stems \cite{banquet}.
+
+\paperhead{hyperell}{Hyperellipsoidal queries for music source separation}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2501.16171}}\par\nopagebreak
+
+This paper extends Banquet from a query that is a point in an embedding space to a query that is a region \cite{hyperell}. The target is a hyperellipsoid whose location and spread the user controls, so one model can extract a single instrument, a group of related sounds or a composite, regardless of how many classes the region covers. It is evaluated on MoisesDB and reports state-of-the-art SNR and retrieval metrics.
+
+The relevance is the idea that a query can say more than a class name. It also marks the limit of what the project does: a stem index cannot express a group such as ``all hand percussion'' or a narrower class such as ``clean acoustic guitar'' without extra training. The abstract does not describe a conditioning mechanism other than the one inherited from Banquet, and the paper does not address absent targets or non-Western music \cite{hyperell}.
+
+\paperhead{qscnet}{QSCNet: a conditioned U-Net for music source separation}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2512.15532}}\par\nopagebreak
+
+QSCNet adds audio-query conditioning to SCNet, a U-Net variant \cite{qscnet}. The authors argue against the view, made in the Banquet paper, that U-Nets are unsuitable for conditioned separation. On a couple of separation tasks QSCNet beats Banquet by more than 1 dB SNR with less than half the parameters.
+
+It is the closest published relative of this project's separator, since it also puts FiLM conditioning inside a U-Net. The differences are the query (an audio clip there, a stem index here), the data (MoisesDB there, MUSDB18 and Saraga here) and the metric. The abstract reports no ablation of the conditioning mechanism, so the paper shows that a conditioned U-Net can beat a conditioned band-split model, not that FiLM is the best way to condition it \cite{qscnet}.
+
+\paperhead{clapsep}{CLAPSep: contrastive pre-trained models for query-conditioned extraction}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2402.17455}}\par\nopagebreak
+
+CLAPSep adapts the CLAP language-audio model for target sound extraction \cite{clapsep}. Queries can be text or audio and can be positive (keep this) or negative (remove this). Experiments on five datasets show zero-shot and few-shot generalisation with fast convergence, and the paper was published in IEEE/ACM Transactions on Audio, Speech, and Language Processing in 2024.
+
+It bears on a design choice the project made. A pretrained embedding gives a shared space for text and audio and brings generalisation with it, while a stem index is simple and needs no external encoder but cannot describe anything outside the eight stems. Negative queries are also relevant, since removing a named sound is the opposite request of extracting one. The abstract does not report results on requests for sounds that are absent from the mixture \cite{clapsep}.
+
+\paperhead{pmq}{Context-aware query refinement for target sound extraction: partially matched queries}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2509.08292}}\par\nopagebreak
+
+This WASPAA 2025 paper treats a case most extraction papers skip, a query that names sounds that are not in the mixture \cite{pmq}. It defines three conditions: fully matched queries, partially matched queries (PMQ, some named sounds are absent) and fully unmatched queries. A multi-task model extracts the target and also estimates sound-class activity, and at inference it drops classes from the query that the activity estimate marks as inactive.
+
+The experiments use FSDKaggle2018 foreground sounds (41 classes) with TAU Urban Acoustic Scenes backgrounds, 6 s mixtures at 16 kHz and about 13M parameters. The baseline loses SNR improvement as inactive classes are added to the query, from 15.65 dB with one active class to 10.96 dB with one active and three inactive. With refinement the same condition scores 14.24 dB. A baseline trained with silent targets for inactive queries handles the fully unmatched case better (attenuation of 78 dB against 32 dB) but loses about 0.9 dB on matched queries, which the authors describe as a trade-off between suppressing wrong extractions and keeping extraction quality.
+
+This is the most direct evidence for the project's absent-query training and for its detector. It shows that the problem is real, that training on silent targets works for the fully unmatched case, and that it costs something on matched queries. It uses environmental sounds and class labels, so it says nothing about music or about a single stem index \cite{pmq}.
+
+\subsection{Category B: architectures and training for music source separation}
+
+The four papers in this group are not query-based, with one exception in how they are used. They show what a strong and efficient separation backbone looks like, how robust training is framed, and how pretrained separators are adapted to new targets.
+
+\paperhead{scnet}{SCNet: sparse compression network for music source separation}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2401.13276}}\par\nopagebreak
+
+SCNet splits the spectrogram into subbands and encodes them with a sparsity-based encoder, compressing less informative subbands more \cite{scnet}. The authors report 9.0 dB SDR on MUSDB18-HQ without extra training data, ahead of earlier state-of-the-art methods, and a CPU inference time that is 48\% of HT Demucs.
+
+SCNet matters for this project in two ways. It is the backbone that QSCNet \cite{qscnet} conditions, and it is the model that the Carnatic work \cite{carnaticft,ssn} adapts. SCNet handles fixed four-stem separation only and does not consider a query or non-Western audio \cite{scnet}.
+
+\paperhead{moiseslight}{Moises-Light: a resource-efficient band-split U-Net}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2510.06785}}\par\nopagebreak
+
+Moises-Light is a lightweight band-split U-Net for four-stem separation on MUSDB-HQ \cite{moiseslight}. The authors report SDRs comparable to models with up to 13 times more parameters, and competitive results when MoisesDB is added as training data.
+
+For this project the paper is a reference on size. A U-Net can reach useful quality without a large parameter count, which fits student-scale hardware. It handles the fixed four-stem setting only, and its abstract says nothing about conditioning or about instruments beyond the four standard stems \cite{moiseslight}.
+
+\paperhead{sdx23}{The Sound Demixing Challenge 2023: music demixing track}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2308.06979}}\par\nopagebreak
+
+This report from Transactions of the International Society for Music Information Retrieval summarises the 2023 music demixing challenge \cite{sdx23}. It introduces robust music source separation, which means training when the training data contains errors, formalises the kinds of error, and releases two simulated sets, one with label noise and one with bleeding. The best system improved SDR by more than 1.6 dB over the 2021 winner on the same evaluation set, and a listening test with producers and musicians assessed perceptual quality.
+
+The relevance is the framing. Bleeding between stems is treated as a property of the training data that a method has to survive, and it is simulated so that its effect can be measured. This project meets the same problem in Saraga, where the multitrack stems contain cross-talk \cite{sanidha}, and chose a different remedy, training on the exact sum of stems. The challenge data is Western pop and rock, so the report does not say how bleed behaves in live Carnatic recordings \cite{sdx23}.
+
+\paperhead{sjtu}{The SJTU X-LANCE Lab system for MSR Challenge 2025}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2602.09042}}\par\nopagebreak
+
+The system chains several BS-RoFormer models, one each for separation, denoising and dereverberation \cite{sjtu}. The team starts from pretrained checkpoints released by the separation community and fine-tunes them with dataset cleaning and mixing, random mixing of music pieces for augmentation and longer training audio, for eight instrument classes. It ranked first on all three subjective and three objective metrics, with a multi-mel SNR of 4.46 dB and an FAD of 0.1988, and the code and checkpoints are public.
+
+It is a recent example of the same strategy this project follows, which is to build on a pretrained separator and not train from scratch. The task is music source restoration, which is not the same as separation, and the paper does not use a query or non-Western instruments \cite{sjtu}.
+
+\subsection{Category C: Indian art music and non-Western audio}
+
+This is the category that decides whether the project's target repertoire has been studied. Five papers address Carnatic or other non-Western music. Two of them are about separation, one is about the data, and two are about recognising instruments.
+
+\paperhead{carnaticft}{A fine-tuning strategy for source separation of Indian Carnatic music}
+\noindent{\small Paper link: \url{https://zenodo.org/records/17304796}}\par\nopagebreak
+
+This master's thesis from Universitat Pompeu Fabra starts from an SCNet pretrained on MUSDB18 and fine-tunes it to separate vocals, mridangam and a violin-plus-tanpura layer \cite{carnaticft}. It states plainly that state-of-the-art separators perform poorly on Carnatic music because their training data differs from it. The training set combines clean Carnatic multitrack recordings with out-of-domain data, and three augmentations narrow the domain gap: violin sampling, simulated microphone bleed and room impulse responses. The best configuration beats the baselines by a large margin in SDR on a clean benchmark derived from Sanidha, and a perceptual evaluation on Saraga shows quality gains for all three sources. Training took under two days on one 40 GB GPU, and models, code, a cleaned version of Saraga and the benchmark are released.
+
+This is the closest published work to the project's data and instruments, and it makes two points the project relies on. Western-trained separators transfer badly, and pretrained models can be adapted cheaply. It also differs in ways that matter. The output is three fixed layers, so there is no query, violin and tanpura share one output, ghatam is not a target, and the abstract gives no numeric SDR \cite{carnaticft}.
+
+\paperhead{sanidha}{Sanidha: a studio-quality multi-modal dataset for Carnatic music}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2501.06959}}\par\nopagebreak
+
+Sanidha is a Carnatic multitrack dataset recorded for source separation \cite{sanidha}. Five concerts were recorded in a studio, about 8 hours in total, with each musician in a separate acoustically isolated room, headphone or in-ear monitoring and a shared control room. The instruments are vocals, violin, mridangam, ghatam (in two concerts) and a tanpura drone. The authors say that Saraga has significant leakage between tracks, for example the violin is audible on the vocal track, and conclude that it is unsuitable as accurate ground truth for training or evaluating supervised separators.
+
+In the fine-tuning experiment a two-stem Spleeter was trained on Sanidha (13.21 h of mixtures) and on Saraga (12.37 h) and evaluated on a Sanidha validation concert. Average SDR was 7.87 dB for the Sanidha-trained model and 7.67 dB for the Saraga-trained one. A listening test with 14 participants found no significant effect of model. The authors call the experiments preliminary, and note that Sanidha has fewer vocalists than Saraga and that its studio condenser recordings differ from the dynamic microphones common at live concerts \cite{sanidha}.
+
+This matters here because the paper names the problem the project had to deal with from the other side. Saraga is the only Carnatic multitrack corpus with enough tracks for training, and it is also the one the authors of \cite{sanidha} and \cite{carnaticft} say cannot serve as clean ground truth. Any SI-SDR the project reports against Saraga stems inherits that bleed.
+
+\paperhead{ssn}{Separation and classification of Indian classical instruments from monophonic and polyphonic clips}
+\noindent{\small Paper link: \url{https://submission-hk.aconf.org/hk/2026/03/paper_1181302_8v5bstjufvod2xwb_v1.pdf}}\par\nopagebreak
+
+This manuscript from SSN College of Engineering has two parts \cite{ssn}. For recognition, it trains an SVM, a CNN and a PANN-based classifier on IMID, a set of 10,050 one-minute tracks of ten instruments. The CNN reaches 99.42\% validation accuracy, and the authors observe that it generalises poorly to audio from outside the dataset, while the PANN embedding generalises better at slightly lower accuracy. For separation, it splits Sanidha recordings into vocals, mridangam and a violin-plus-tanpura layer and compares SCNet, BS-RoFormer and HTDemucs. SCNet reaches 13.15 dB SDR on vocals, BS-RoFormer is slightly better on mridangam and the accompaniment layer, and HTDemucs is lower.
+
+Two points apply to the project. The recognition result is a warning for any detector trained on clean isolated clips: near-perfect validation accuracy did not carry over to real audio. The separation result agrees with \cite{carnaticft} that Western-pretrained architectures can be adapted. The manuscript does not state a venue, ghatam is excluded because it is missing from some songs, the output is three fixed layers, and the paper has no query and no handling of absent instruments \cite{ssn}.
+
+\paperhead{worldmusic}{Universal music representations? Foundation models on world music corpora}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2506.17055}}\par\nopagebreak
+
+This ISMIR 2025 paper evaluates five audio foundation models on six corpora spanning Western pop, Greek, Turkish and Indian classical music \cite{worldmusic}. It uses probing, fine-tuning of the last one or two layers and multi-label few-shot learning, and reaches state of the art on five of the six datasets. Larger models do better on non-Western music, but performance drops for traditions that are culturally distant from the training data, and fine-tuning does not consistently beat probing.
+
+This is evidence for a design alternative the project did not take. The detector here is a small CNN of 0.42M parameters trained from scratch, while a frozen foundation model with a light classifier is a credible substitute that would carry knowledge of non-Western timbre. The evaluation covers tagging and classification, not instrument presence inside a polyphonic mixture and not separation \cite{worldmusic}.
+
+\paperhead{persian}{Persian musical instruments classification using polyphonic data augmentation}
+\noindent{\small Paper link: \url{https://neurips.cc/virtual/2025/123746}}\par\nopagebreak
+
+This NeurIPS 2025 workshop paper builds a multi-label instrument classifier for traditional Persian music from isolated recordings \cite{persian}. The authors release a dataset of seven Persian instruments plus violin, piano and vocals, and propose a culturally informed augmentation that builds realistic polyphonic mixtures from monophonic samples. A MERT-based classifier reaches an ROC-AUC of 0.796 on real polyphonic Persian music in an out-of-distribution test.
+
+The idea is the same one the project's detector uses: when real mixtures with exact labels are scarce, sum clean instrument recordings and label the sum. It is a short workshop paper, and the abstract gives a single headline number and no per-instrument results \cite{persian}.
+
+\subsection{Category D: data, bleed and training-set construction}
+
+Four papers deal with the data side of the problem. Three of them build datasets to get around bleed, and one measures how large the gap between synthetic and real recordings can be.
+
+\paperhead{hive}{Hive: a semantically consistent dataset for query-based separation}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2601.22599}}\par\nopagebreak
+
+The authors argue that in-the-wild datasets have weak labels and many co-occurring events, which makes query-based separators learn spurious links between background sounds and the target class \cite{hive}. An automated pipeline mines high-purity single-event segments and mixes them under a consistent protocol, giving a synthetic set of 2.4k hours. Models trained on it reach separation quality competitive with SAM Audio, which was trained on a set about 500 times larger, and generalise zero-shot to out-of-distribution benchmarks.
+
+The lesson for the project is that label purity can stand in for volume. MUSDB18 stems are isolated recordings, and the Saraga stems are not clean, so the project has one pure corpus and one impure one. The dataset covers general sound events and the abstract does not claim music-specific results \cite{hive}.
+
+\paperhead{spheres}{The Spheres dataset: multitrack orchestral recordings}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2511.21247}}\par\nopagebreak
+
+Spheres contains multitrack recordings of an orchestral ensemble captured with 23 microphones (close, main and ambient), which allows realistic stereo mixes with controlled bleed and isolated stems \cite{spheres}. It includes estimated room impulse responses and baseline experiments with X-UMX models for orchestral family separation and for microphone debleeding. It appeared in IEEE Transactions on Audio, Speech and Language Processing in 2026.
+
+It treats bleed as a task to be solved as well as a defect to be avoided. Removing microphone bleed is a separation problem of its own, and the dataset supplies the matched clean and bled signals needed to train for it. The set covers a little over one hour and is classical orchestral music, so it does not transfer directly to Carnatic ensembles \cite{spheres}.
+
+\paperhead{synthsod}{SynthSOD: a synthetic orchestral dataset for separation}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2409.10995}}\par\nopagebreak
+
+SynthSOD builds multitrack orchestral data by simulation with high-quality soundfonts, which gives bleed-free stems with varied dynamics, tempo changes and styles \cite{synthsod}. The authors train a baseline separator on it and compare it with EnsembleSet on both synthetic and real recordings. It was published in IEEE Open Journal of Signal Processing in 2025.
+
+The approach is the same trade the project made on Saraga: when real stems are contaminated, build clean ones. The abstract does not give the dataset size or numeric results, and the next paper shows that the synthetic-to-real gap is the thing to check \cite{synthsod}.
+
+\paperhead{ensembles}{Source separation of small classical ensembles: challenges and opportunities}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2505.17823}}\par\nopagebreak
+
+The authors trained one ConvTasNet per string or woodwind instrument on a synthesised woodwind ensemble database built to fix instrument imbalance in EnsembleSet \cite{ensembles}. Average SDR was 6.2 dB (causal) and 6.9 dB (non-causal) on the synthetic validation set, and fell to 0.3 dB and 0.4 dB on real recordings (Bach10 and URMP). They conclude that mismatch between synthetic and real audio is a major problem.
+
+This is the most relevant caution in the set. The project trains and validates its Carnatic separation on sums of stems, so its numbers describe synthetic mixtures. A drop of 6 dB between synthetic and real audio in \cite{ensembles} is large enough that the project's real-mix behaviour has to be reported as unmeasured, not as equal. The study concerns classical ensembles and a different model family, so the size of the gap on Carnatic music is unknown \cite{ensembles}.
+
+\subsection{Category E: evaluation, surveys, tools and foundation models}
+
+The last five papers do not propose a separator for the project's setting. They supply the evaluation background, the tooling and a reference point at the scale of foundation models.
+
+\paperhead{mapss}{MAPSS: manifold-based assessment of perceptual source separation}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2509.09212}}\par\nopagebreak
+
+MAPSS introduces two measures, Perceptual Separation and Perceptual Match, that assess leakage from competing sources and distortion of the target separately \cite{mapss}. The measures embed signals with diffusion maps, are differentiable and run at up to 75 frames per second. Tested on English, Spanish and music mixtures against 18 existing measures, they almost always placed first or second in correlation with subjective scores. It was published at ICLR 2026.
+
+It makes the argument the project's metrics follow: one number such as SDR cannot tell leakage from self-distortion, so they should be reported apart. The project reports SIR for leakage next to SI-SDR for quality. It does not use MAPSS itself, and it is evaluated mostly on speech \cite{mapss}.
+
+\paperhead{perceptual}{Perceptual errors in music source separation: looking beyond SDR averages}
+\noindent{\small Paper link: \url{https://ismir2025program.ismir.net/poster_221.html}}\par\nopagebreak
+
+This ISMIR 2025 study ran a listening test across 6-stem separation, lead versus backing vocals and duets \cite{perceptual}. SDR generally tracks perceptual ratings, but some errors strongly affect perception and are poorly captured by SDR, while in other cases listeners hear better quality than SDR suggests. The authors also note that SDR variance depends heavily on the musical characteristics of the test set, and recommend reporting error categories and distributions along with averages.
+
+It applies directly to how the project's validation numbers should be read. Each stem is scored on between 11 and 30 clips, and a mean of that few values hides the spread. The project reports means, and a per-clip distribution would be the next step \cite{perceptual}.
+
+\paperhead{survey30}{30+ years of source separation research: achievements and future challenges}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2501.11837}}\par\nopagebreak
+
+Written for the 50th anniversary of ICASSP, this survey covers single- and multi-channel separation, deep learning methods, the evaluation culture built around challenges, metrics such as SDR, SIR and SAR, and datasets, and ends with trends and open challenges \cite{survey30}.
+
+It is the background reference for the project's metric choices. It treats query-conditioned and adaptive separation as an emerging direction and does not analyse it in detail \cite{survey30}.
+
+\paperhead{msst}{MSST: a unified framework for training and evaluating music demixing models}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2607.23395}}\par\nopagebreak
+
+MSST packages training, validation and inference for many separation model families under YAML configuration \cite{msst}. It supports sliding-window inference with cross-fading, test-time augmentation, model ensembling and LoRA fine-tuning, and the authors report ablations showing gains from these techniques.
+
+The sliding-window inference with cross-fading is how long songs are processed by models trained on 6 s clips, as the project does. The framework adds no new architecture and, from its abstract, has no query-based model \cite{msst}.
+
+\paperhead{samaudio}{SAM Audio: segment anything in audio}
+\noindent{\small Paper link: \url{https://arxiv.org/abs/2512.18099}}\par\nopagebreak
+
+SAM Audio is a foundation model for general audio separation, built as a diffusion transformer trained with flow matching on speech, music and general sounds \cite{samaudio}. It combines text, visual and temporal-span prompts in one framework, reports state-of-the-art results across general sound, speech, music and instrument separation benchmarks, and comes with a real-world benchmark and a reference-free evaluation model.
+
+It sets the upper bound on prompt flexibility among the papers reviewed. The cost is scale, and the abstract does not examine Indian instruments or report on the rare stems the project targets, so it frames the project's scope as a small, music-focused model with a fixed query set evaluated per instrument \cite{samaudio}.
+
+\section{Comparative analysis}
+
+Table 1 compares the eighteen papers in Categories A to D on how the target is specified, what the core method is, and what repertoire the paper is aimed at. The five papers in Category E are omitted because they are surveys, tools, metrics or a general foundation model.
+
+\begingroup\small\renewcommand{\arraystretch}{1.15}
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.9cm}>{\raggedright\arraybackslash}p{3.3cm}>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{4.4cm}>{\raggedright\arraybackslash}p{2.7cm}@{}}
+\caption{Comparison of the reviewed query-based, architecture, Indian art music and data papers.}\label{tab:compare}\\
+\toprule \textbf{Ref.} & \textbf{Paper} & \textbf{Query or prompt} & \textbf{Core method} & \textbf{Repertoire} \\ \midrule \endfirsthead
+\toprule \textbf{Ref.} & \textbf{Paper} & \textbf{Query or prompt} & \textbf{Core method} & \textbf{Repertoire} \\ \midrule \endhead
+\bottomrule \endfoot
+\cite{banquet} & Banquet & Audio clip (PaSST embedding) & Band-split encoder, single decoder, one FiLM layer & Western music \\
+\cite{hyperell} & Hyperellipsoidal queries & Region in embedding space & Query-by-region extension of Banquet & Western music \\
+\cite{qscnet} & QSCNet & Audio clip & Conditioned U-Net on SCNet, FiLM & Western music \\
+\cite{clapsep} & CLAPSep & Text or audio, positive or negative & CLAP-based extraction & General audio \\
+\cite{pmq} & Partially matched queries & Class labels, some inactive & Extraction plus activity estimation & Sound events \\
+\cite{scnet} & SCNet & None (fixed stems) & Sparse compression network & Western music \\
+\cite{moiseslight} & Moises-Light & None (fixed stems) & Lightweight band-split U-Net & Western music \\
+\cite{sdx23} & SDX 2023 report & None (fixed stems) & Challenge, robust training & Western music \\
+\cite{sjtu} & SJTU MSR system & None (eight classes) & Chained BS-RoFormers, fine-tuned & Western music \\
+\cite{carnaticft} & Carnatic fine-tuning & None (three layers) & SCNet fine-tuned, bleed simulation & Carnatic music \\
+\cite{sanidha} & Sanidha & None (dataset) & Studio multitrack, Spleeter fine-tuning & Carnatic music \\
+\cite{ssn} & SSN manuscript & None (three layers) & SCNet, BS-RoFormer, HTDemucs; CNN, PANN & Indian classical \\
+\cite{worldmusic} & World music foundation models & None (probing) & Probing, fine-tuning, few-shot & World music \\
+\cite{persian} & Persian instruments & None (classification) & MERT with polyphonic augmentation & Persian music \\
+\cite{hive} & Hive & Class or text (dataset) & High-purity synthetic mixtures & General audio \\
+\cite{spheres} & Spheres & None (dataset) & 23-microphone orchestral recordings & Classical \\
+\cite{synthsod} & SynthSOD & None (dataset) & Simulated bleed-free orchestra & Classical \\
+\cite{ensembles} & Small ensembles & None (per instrument) & ConvTasNet on synthetic ensembles & Classical \\
+\end{longtable}\endgroup
+
+Three patterns stand out. First, the papers that accept a query \cite{banquet,hyperell,qscnet,clapsep,pmq} are either Western music trained on one corpus or general audio, and none is built for Indian instruments. The papers that cover Carnatic or Indian classical music \cite{carnaticft,sanidha,ssn} all produce a fixed set of layers and take no query. The two groups do not overlap.
+
+Second, the data papers \cite{sanidha,hive,spheres,synthsod,ensembles} each work around contaminated or scarce stems in a different way: studio isolation, purity filtering, simulation or per-instrument models. The one paper that measures the synthetic-to-real gap reports a fall from 6.2 dB to 0.3 dB \cite{ensembles}. Third, evaluation work \cite{mapss,perceptual} argues for separating leakage from distortion and for reporting distributions, while the query-based music papers report SNR only and say that SIR and SAR were not computed \cite{banquet}. One gap runs through the whole set: no paper reports what a music separator returns when the requested stem is absent, as far as the abstracts and the four full texts show.
+
+\section{Research gaps}
+
+Reading the papers together leaves six gaps. Each one comes from limitations the authors report or from what the papers do not evaluate.
+
+\begin{enumerate}[leftmargin=2.2em,itemsep=0.5em]
+\item One model for Western and Carnatic stems. The query-based music systems \cite{banquet,hyperell,qscnet} are trained on Western data. The Carnatic systems \cite{carnaticft,ssn} produce three fixed layers. No reviewed paper conditions one model on both repertoires. The project trains a single stem-ID model on MUSDB18 and Saraga.
+\item Contaminated Carnatic ground truth. Saraga has the track count but also bleed, and the authors of \cite{sanidha} and \cite{carnaticft} say it cannot serve as clean ground truth. Sanidha is clean but small, about 8 hours across five concerts, and has ghatam in two of them \cite{sanidha}. Results on either set carry a caveat, and the project reports against Saraga with that caveat stated.
+\item Requests for absent stems. Only \cite{pmq} studies queries for sounds that are not in the mixture, and it does so on environmental sounds with class labels. The music query systems \cite{banquet,hyperell,qscnet} assume the target is present. The project trains on silent targets and measures how far below the mixture an absent stem lands.
+\item Leakage of unselected stems. Evaluation papers \cite{mapss,perceptual} separate leakage from distortion, but the query-based music papers report SNR \cite{banquet}. A user who selects guitar and hears vocals has a leakage problem that SNR can hide. The project reports SIR and adds a filter aimed at it.
+\item Combining a pretrained separator with a model for uncovered stems. Existing work fine-tunes a pretrained separator \cite{sjtu,carnaticft}. None of the reviewed papers keeps a pretrained separator unchanged for the stems it handles well and routes the missing stems to a second model under one joint filter. That is the structure of the project's final system.
+\item Synthetic training audio and real mixtures. The gap between synthetic and real recordings can be large \cite{ensembles}, and averages over few clips hide the spread \cite{perceptual}. The project trains Carnatic separation on stem sums, so its real-mix behaviour is the least measured part of the work.
+\end{enumerate}
+
+\section{Positioning of the proposed work}
+
+The proposed system is a single query-conditioned U-Net for eight stems, a small stem detector, and an inference pipeline that combines both with a pretrained backend. It borrows from the literature in specific ways. The separator follows the conditioned U-Net line of QSCNet \cite{qscnet} and keeps Banquet's idea of one stem-agnostic network \cite{banquet}, with the query reduced to a stem index. Its size follows the efficient designs of \cite{scnet} and \cite{moiseslight}. The data strategy follows \cite{carnaticft} and \cite{sanidha} in treating Carnatic bleed as a first-order problem, and follows \cite{hive} in preferring pure data to more data. Absent-query training follows the silent-target practice described in \cite{pmq}. The detector's synthetic mixing follows the same logic as \cite{persian}.
+
+The pretrained backend is the 6-source Demucs model. Its architecture paper predates the review window, so only its use is described here. It supplies vocals, drums, bass, guitar and piano, and the project's own U-Net supplies violin, mridangam and ghatam. Evaluation uses SI-SDR and SIR from the survey of the field \cite{survey30}, reports leakage apart from quality as argued in \cite{mapss}, and processes long songs with sliding windows and cross-fading as in \cite{msst}.
+
+The mapping to the project objectives is as follows. Building a query-conditioned framework rests on \cite{banquet} and \cite{qscnet}. Covering Carnatic instruments follows \cite{carnaticft} to \cite{ssn}. Handling absent and mismatched queries is motivated by \cite{pmq}. Suppressing unselected stems is motivated by \cite{mapss} and \cite{perceptual}. Dealing with contaminated stems draws on \cite{sdx23}, \cite{sanidha} and \cite{spheres} to \cite{ensembles}. Benchmarking uses the practices in \cite{survey30} and \cite{msst}.
+
+\section{Research question and contribution}
+
+\subsection{What is not new}
+
+Four parts of the project are already published. A FiLM-conditioned U-Net for music separation is QSCNet \cite{qscnet}, and conditioned single-decoder separation beyond four stems is Banquet \cite{banquet}. Fine-tuning a Western separator for Carnatic music is \cite{carnaticft}. Training with silent targets is the practice described in \cite{pmq} for sound extraction, and building polyphonic training data from isolated recordings is the approach of \cite{persian}. The claims below are limited to the 23 surveyed papers.
+
+Table 2 sets the two closest systems beside the proposed model. Banquet changes what a query is and keeps one FiLM layer. The Carnatic fine-tuning work changes the training data and keeps fixed outputs. This project changes the vocabulary, the data pairing and the inference procedure around a conditioned U-Net.
+
+\begingroup\small\renewcommand{\arraystretch}{1.15}
+\begin{table}[ht]\centering
+\caption{The two closest systems and the proposed model. Entries for the published systems come from \cite{banquet} (full text) and \cite{carnaticft} (abstract).}\label{tab:closest}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.1cm}>{\raggedright\arraybackslash}p{4.2cm}>{\raggedright\arraybackslash}p{4.2cm}>{\raggedright\arraybackslash}p{4.4cm}@{}}
+\toprule
+ & \textbf{Banquet \cite{banquet}} & \textbf{Carnatic fine-tuning \cite{carnaticft}} & \textbf{Proposed} \\ \midrule
+\textbf{Backbone} & Band-split encoder, single decoder, 24.9M parameters & SCNet pretrained on MUSDB18 & U-Net encoder-decoder, 8.8M parameters, plus Demucs backend \\[0.3em]
+\textbf{Query} & 10 s audio clip through a frozen PaSST encoder & None, three fixed outputs & Stem index (0 to 7) through a learned embedding \\[0.3em]
+\textbf{Fusion} & One FiLM layer on the bottleneck & Not applicable & FiLM at each of four encoder levels \\[0.3em]
+\textbf{Targets} & MoisesDB stems, Western & Vocals, mridangam, violin and tanpura & Vocals, drums, bass, guitar, piano, violin, mridangam, ghatam \\[0.3em]
+\textbf{Data} & MoisesDB, 240 songs & Clean Carnatic multitracks plus out-of-domain data, bleed simulation & MUSDB18 (84 train, 16 validation), Saraga (132 train, 36 validation), stem sums \\[0.3em]
+\textbf{Metrics} & Median SNR & SDR, listening test on Saraga & SI-SDR, SIR, detector F1 \\[0.3em]
+\textbf{Absent targets} & Not reported & Not applicable & Trained on 20\% silent-target requests \\[0.3em]
+\bottomrule\end{tabular}\end{table}\endgroup
+
+\subsection{Research question and hypotheses}
+
+The research question is whether a single stem-ID-conditioned U-Net, trained on Western and Carnatic stems together and wrapped in a detector and a competitive filter, can return only the stems a user selects. The project states three hypotheses, each testable with the data it has.
+
+\textbf{H1.} A model trained on both repertoires extracts Carnatic stems with higher SI-SDR than the best output of a pretrained Western-only 6-source separator on the same audio.
+
+\textbf{H2.} Training with silent-target requests makes the model return near-silence for a stem that is absent from the song.
+
+\textbf{H3.} Dividing each time-frequency bin among all sources lowers the leakage of unselected stems compared with extracting each stem independently.
+
+The project's measurements, with their limits, are these. For H1, on 12 Saraga validation tracks (20 s windows, stem-sum mixtures) the U-Net scored 5.28 dB on vocals, 0.98 dB on violin and 0.06 dB on mridangam, against 4.50, $-$1.85 and $-$4.35 dB for the best-matching of the six Demucs outputs, gains of 0.8, 2.8 and 4.4 dB. For H2, on four pop songs (measured with an earlier checkpoint) the violin, mridangam and ghatam outputs fell between 27 and 178 dB below the mix. The cost on present stems was not isolated, and \cite{pmq} reports that such training can lose quality on matched queries. For H3, on four MUSDB test tracks (40 s excerpts) the leakage measured as SIR rose from 25.4 to 28.3 dB for vocals, from 22.5 to 27.5 dB for drums and from 13.8 to 21.5 dB for guitar plus piano, at a cost of about 1 dB of SI-SDR on the core stems. The released system also returns the remaining accompaniment for guitar and piano, and its guitar-plus-piano SIR is then 20.2 dB, against $-$1.7 dB for the project's own U-Net alone.
+
+\subsection{Contribution and limits}
+
+The project does not claim a new architecture or a new best SDR. The contribution is a system and an evaluation that none of the surveyed papers contains: one conditioned model across Western and Carnatic stems, a measured comparison against the best pretrained output on Carnatic audio, a study of requests for absent stems, and a record of what the data problems were and what fixing them was worth. Validation SI-SDR rose from $-$8.5 dB to 2.5 dB over the course of the work, and the largest single step came from correcting the data. The limits are listed in the next paragraph.
+
+Violin separation is modest at about 1 dB, and ghatam is returned as silence because only 46 training tracks contain it. The Saraga ground truth contains bleed \cite{sanidha}, the validation sets hold between 11 and 30 clips per stem \cite{perceptual}, and the Carnatic training audio is synthetic, so real-mix performance is not measured \cite{ensembles}. The Western stems depend on a pretrained backend.
+
+\section{Conclusion}
+
+The 23 papers show that fixed-stem separation is well served by small, accurate models \cite{scnet,moiseslight}, that query-based separation is active but concentrated in Western music and general audio \cite{banquet,hyperell,qscnet,clapsep,pmq}, and that Carnatic separation has so far been approached with fixed outputs and with ground truth that is either contaminated or small \cite{carnaticft,sanidha,ssn}. The common weak spots are bleed in the stems, the gap between synthetic and real audio, and requests for stems that are not there. The project responds with one stem-ID-conditioned model for eight stems, a detector, absent-query training and a competitive filter around a pretrained backend. It improves on the best pretrained output for Carnatic vocals, violin and mridangam, and it removes most of the leakage that independent extraction leaves. It leaves ghatam, real-mix generalisation and clean-benchmark evaluation open.
+
+\begin{thebibliography}{99}
+\small
+\setlength{\itemsep}{0.45em}
+\bibitem{banquet} K. N. Watcharasupat and A. Lerch, ``A stem-agnostic single-decoder system for music source separation beyond four stems,'' in Proc. 25th Int. Soc. Music Inf. Retrieval Conf. (ISMIR), San Francisco, CA, USA, 2024, \href{https://arxiv.org/abs/2406.18747}{arXiv:2406.18747}. \newline\textit{Link:} \url{https://arxiv.org/abs/2406.18747}
+\bibitem{hyperell} K. N. Watcharasupat and A. Lerch, ``Separate this, and all of these things around it: Music source separation via hyperellipsoidal queries,'' \href{https://arxiv.org/abs/2501.16171}{arXiv:2501.16171}, Jan. 2025. \newline\textit{Link:} \url{https://arxiv.org/abs/2501.16171}
+\bibitem{qscnet} K. O'Hanlon, B. Woods, L. Wang, and M. Sandler, ``A conditioned UNet for music source separation (QSCNet),'' in Proc. 17th Int. Symp. Comput. Music Multidisciplinary Res. (CMMR), 2025, pp. 322--333, \href{https://arxiv.org/abs/2512.15532}{arXiv:2512.15532}. \newline\textit{Link:} \url{https://arxiv.org/abs/2512.15532}
+\bibitem{clapsep} H. Ma, Z. Peng, X. Li, M. Shao, X. Wu, and J. Liu, ``CLAPSep: Leveraging contrastive pre-trained model for multi-modal query-conditioned target sound extraction,'' IEEE/ACM Trans. Audio, Speech, Lang. Process., vol. 32, 2024, \href{https://doi.org/10.1109/TASLP.2024.3497586}{doi: 10.1109/TASLP.2024.3497586}. \newline\textit{Link:} \url{https://arxiv.org/abs/2402.17455}
+\bibitem{pmq} R. Sato, C. Haruta, N. Hiruma, and K. Imoto, ``Context-aware query refinement for target sound extraction: Handling partially matched queries,'' in Proc. IEEE Workshop Appl. Signal Process. Audio Acoust. (WASPAA), 2025, \href{https://arxiv.org/abs/2509.08292}{arXiv:2509.08292}. \newline\textit{Link:} \url{https://arxiv.org/abs/2509.08292}
+\bibitem{scnet} W. Tong, J. Zhu, J. Chen, S. Kang, T. Jiang, Y. Li, Z. Wu, and H. Meng, ``SCNet: Sparse compression network for music source separation,'' in Proc. IEEE Int. Conf. Acoust., Speech, Signal Process. (ICASSP), 2024, \href{https://arxiv.org/abs/2401.13276}{arXiv:2401.13276}. \newline\textit{Link:} \url{https://arxiv.org/abs/2401.13276}
+\bibitem{moiseslight} Y.-N. Hung, I. Pereira, and F. Korzeniowski, ``Moises-Light: Resource-efficient band-split U-Net for music source separation,'' \href{https://arxiv.org/abs/2510.06785}{arXiv:2510.06785}, Oct. 2025. \newline\textit{Link:} \url{https://arxiv.org/abs/2510.06785}
+\bibitem{sdx23} G. Fabbro et al., ``The Sound Demixing Challenge 2023 -- Music demixing track,'' Trans. Int. Soc. Music Inf. Retrieval, vol. 7, no. 1, pp. 63--84, 2024, \href{https://doi.org/10.5334/tismir.171}{doi: 10.5334/tismir.171}. \newline\textit{Link:} \url{https://arxiv.org/abs/2308.06979}
+\bibitem{sjtu} J. Zhu, H. Qiu, H. Zhu, J. Yu, K. Yu, and X. Chen, ``The SJTU X-LANCE Lab system for MSR Challenge 2025,'' \href{https://arxiv.org/abs/2602.09042}{arXiv:2602.09042}, Feb. 2026. \newline\textit{Link:} \url{https://arxiv.org/abs/2602.09042}
+\bibitem{carnaticft} S. Schweinitz, ``A fine tuning strategy to improve musical source separation quality for Indian Carnatic music,'' M.Sc. thesis, Sound and Music Computing, Univ. Pompeu Fabra, Barcelona, Spain, 2025, \href{https://doi.org/10.5281/zenodo.17304796}{doi: 10.5281/zenodo.17304796}. \newline\textit{Link:} \url{https://zenodo.org/records/17304796}
+\bibitem{sanidha} V. V. Krishnan, N. Alben, A. Nair, and N. Condit-Schultz, ``Sanidha: A studio quality multi-modal dataset for Carnatic music,'' in Proc. 25th Int. Soc. Music Inf. Retrieval Conf. (ISMIR), 2024, pp. 705--712, \href{https://arxiv.org/abs/2501.06959}{arXiv:2501.06959}. \newline\textit{Link:} \url{https://arxiv.org/abs/2501.06959}
+\bibitem{ssn} R. Srinivasan, A. Rajagopal, and Hayden C., ``Audio separation and classification of Indian classical instruments from monophonic and polyphonic audio clips,'' manuscript, SSN College of Engineering, Chennai, India, 2026 (venue not stated). \newline\textit{Link:} \url{https://submission-hk.aconf.org/hk/2026/03/paper_1181302_8v5bstjufvod2xwb_v1.pdf}
+\bibitem{worldmusic} C. Papaioannou, E. Benetos, and A. Potamianos, ``Universal music representations? Evaluating foundation models on world music corpora,'' in Proc. 26th Int. Soc. Music Inf. Retrieval Conf. (ISMIR), 2025, \href{https://arxiv.org/abs/2506.17055}{arXiv:2506.17055}. \newline\textit{Link:} \url{https://arxiv.org/abs/2506.17055}
+\bibitem{persian} D. Esfangereh, M. H. Sameti, S. Moridani, L. Javidpour, and M. Soleymani, ``Persian musical instruments classification using polyphonic data augmentation,'' in NeurIPS 2025 Workshop AI for Music: Where Creativity Meets Computation, San Diego, CA, USA, 2025. \newline\textit{Link:} \url{https://neurips.cc/virtual/2025/123746}
+\bibitem{hive} K. Li, J. Cheng, C. Zeng, Z. Yan, H. Wang, Z. Su, B. Zheng, and X. Hu, ``A semantically consistent dataset for data-efficient query-based universal sound separation,'' in Proc. Int. Conf. Mach. Learn. (ICML), 2026, \href{https://arxiv.org/abs/2601.22599}{arXiv:2601.22599}. \newline\textit{Link:} \url{https://arxiv.org/abs/2601.22599}
+\bibitem{spheres} J. Garcia-Martinez, D. Diaz-Guerra, J. Anderson, R. Falcon-Perez, P. Cabanas-Molero, T. Virtanen, J. J. Carabias-Orti, and P. Vera-Candeas, ``The Spheres dataset: Multitrack orchestral recordings for music source separation and information retrieval,'' IEEE Trans. Audio, Speech, Lang. Process., vol. 34, pp. 2622--2634, 2026, \href{https://arxiv.org/abs/2511.21247}{arXiv:2511.21247}. \newline\textit{Link:} \url{https://arxiv.org/abs/2511.21247}
+\bibitem{synthsod} J. Garcia-Martinez, D. Diaz-Guerra, A. Politis, T. Virtanen, J. J. Carabias-Orti, and P. Vera-Candeas, ``SynthSOD: Developing an heterogeneous dataset for orchestra music source separation,'' IEEE Open J. Signal Process., vol. 6, pp. 129--137, 2025, \href{https://arxiv.org/abs/2409.10995}{arXiv:2409.10995}. \newline\textit{Link:} \url{https://arxiv.org/abs/2409.10995}
+\bibitem{ensembles} G. Roa-Dabike, T. J. Cox, J. P. Barker, M. A. Akeroyd, S. Bannister, B. Fazenda, J. Firth, S. Graetzer, A. Greasley, R. R. Vos, and W. M. Whitmer, ``Source separation of small classical ensembles: Challenges and opportunities,'' \href{https://arxiv.org/abs/2505.17823}{arXiv:2505.17823}, May 2025. \newline\textit{Link:} \url{https://arxiv.org/abs/2505.17823}
+\bibitem{mapss} A. Ivry, S. Cornell, and S. Watanabe, ``MAPSS: Manifold-based assessment of perceptual source separation,'' in Proc. Int. Conf. Learn. Representations (ICLR), 2026, \href{https://arxiv.org/abs/2509.09212}{arXiv:2509.09212}. \newline\textit{Link:} \url{https://arxiv.org/abs/2509.09212}
+\bibitem{perceptual} S. Sarkar, V. Moomijan, B. Woods, E. Benetos, and M. Sandler, ``Perceptual errors in music source separation: Looking beyond SDR averages,'' in Proc. 26th Int. Soc. Music Inf. Retrieval Conf. (ISMIR), 2025. \newline\textit{Link:} \url{https://ismir2025program.ismir.net/poster_221.html}
+\bibitem{survey30} S. Araki, N. Ito, R. Haeb-Umbach, G. Wichern, Z.-Q. Wang, and Y. Mitsufuji, ``30+ years of source separation research: Achievements and future challenges,'' in Proc. IEEE Int. Conf. Acoust., Speech, Signal Process. (ICASSP), 2025, \href{https://arxiv.org/abs/2501.11837}{arXiv:2501.11837}. \newline\textit{Link:} \url{https://arxiv.org/abs/2501.11837}
+\bibitem{msst} R. Solovyev, I. Kiselev, A. Stempkovskiy, and T. Gabruseva, ``Music-Source-Separation-Training (MSST): A unified framework for training and evaluating music demixing models,'' \href{https://arxiv.org/abs/2607.23395}{arXiv:2607.23395}, Jul. 2026. \newline\textit{Link:} \url{https://arxiv.org/abs/2607.23395}
+\bibitem{samaudio} B. Shi et al., ``SAM Audio: Segment anything in audio,'' \href{https://arxiv.org/abs/2512.18099}{arXiv:2512.18099}, Dec. 2025. \newline\textit{Link:} \url{https://arxiv.org/abs/2512.18099}
+\end{thebibliography}
+
+\end{document}

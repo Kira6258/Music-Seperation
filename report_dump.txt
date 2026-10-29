@@ -1,0 +1,338 @@
+1: Query-Conditioned Multi-Source
+Music Separation & Stem Detection System
+2: A Beginner-Friendly Project Report & Study Guide — 5th Semester / Final Year Deep Learning Project
+5: Table of Contents
+6: 1. The Problem We Are Solving
+7: 2. The Big Picture: A Two-Stage Pipeline
+8: 3. Sound, From First Principles
+9: 4. Turning Sound Into a Picture: STFT & Spectrograms
+10: 5. HPSS: Separating 'Singing' Sounds From 'Hitting' Sounds
+11: 6. The Datasets: MUSDB18-HQ and Saraga Carnatic
+12: 7. Stage 1 — The Stem Detector (models/stem_detector.py)
+13: 8. Stage 2 — The Query-Conditioned Separator (models/separator.py)
+14: 9. Teaching the Models: The Training Scripts
+15: 10. utils/ — The Toolbox Behind Everything
+16: 11. inference/pipeline.py — Where Everything Comes Together
+17: 12. Overlap-Add Chunking: Handling Long Songs Safely
+18: 13. Loss Functions Recap
+19: 14. The Web App: ui/app.py and the Dashboard
+20: 15. Results & What +10.66 dB SI-SDR Actually Means
+21: 16. Viva Voce: Top 10 Questions, Answered Simply
+22: 17. Conclusion & Future Work
+23: Appendix A: Full Project File Map
+24: Appendix B: requirements.txt
+26: 1. The Problem We Are Solving
+27: Imagine you press 'unmute' on a single instrument inside a song — that's what music source separation tries to do. Tools like Demucs (Meta's popular separator) already do this well, but only for four fixed buckets: Vocals, Drums, Bass, and a catch-all called 'Other'.
+28: That fourth bucket is the problem. If a recording contains a Violin, a Piano, a Mridangam (a South Indian drum), or a Ghatam (a clay pot percussion instrument), a standard model has no slot for them — it just dumps everything that isn't vocals/drums/bass into 'Other'. You cannot ask it for 'just the violin', because as far as the model is concerned, there is no such thing as a violin.
+29: This project builds a sorter with 8 labelled baskets instead of 4, covering both Western pop/rock instrumentation and Carnatic (South Indian classical) instrumentation, and — crucially — lets the user type in exactly which basket(s) they want back.
+30: 1.1 The Unified 8-Instrument Vocabulary
+31: Every part of this project speaks the same 8-word vocabulary, defined once in utils/audio_utils.py:
+32: STEM_LABELS = ["vocals", "drums", "bass", "guitar",
+33:               "piano", "violin", "mridangam", "ghatam"]
+35: This single list is imported everywhere else in the codebase, so a stem always means the same thing whether you are in the detector, the separator, the dataset loader, or the web UI — there is exactly one source of truth for 'what an instrument is called'.
+37: 2. The Big Picture: A Two-Stage Pipeline
+38: The system works in two stages, plus a third stage that is really just a friendly window onto the first two:
+39: Stem Detection & Profiling — 'What instruments are even in this song, and how confident are we?'
+40: Query-Conditioned Separation — 'Okay, now isolate only the ones I asked for.'
+41: Interactive Web UI — a Flask dashboard where a user drags in a song, sees the detected tags, ticks the ones they want, and gets back a clean isolated track.
+42: 2.1 Pipeline Flowchart
+43:   ┌────────────────────┐
+44:   │   Uploaded Song     │   (any .wav/.mp3/.flac/.m4a)
+45:   └─────────┬──────────┘
+46:             │
+47:             ▼
+48:   ┌────────────────────────────────────────────┐
+49:   │  STAGE 1 — detect_stems()                    │
+50:   │  • CNN StemDetector on log-mel spectrogram    │
+51:   │  • HDEMUCS physical energy decomposition      │
+52:   │  • HPSS + spectral profiling (timbre check)   │
+53:   │  • Silence-gating to kill false positives      │
+54:   │  → {"vocals": 0.94, "violin": 0.88, ...}      │
+55:   └─────────┬──────────────────────────────────┘
+56:             │   user ticks the instruments they want
+57:             ▼
+58:   ┌────────────────────────────────────────────┐
+59:   │  STAGE 2 — separate()                        │
+60:   │  • HDEMUCS chunked separation (if available)  │
+61:   │  • else: custom FiLM U-Net + query embedding  │
+62:   │  • 8-second Overlap-Add chunking              │
+63:   → isolated, high-fidelity audio (+10.66 dB SI-SDR)
+64:   └─────────┬──────────────────────────────────┘
+65:             │
+66:             ▼
+67:   ┌────────────────────┐
+68:   │  STAGE 3 — Flask UI  │  http://127.0.0.1:5000
+69:   │  drag-drop → tags → players
+70:   └────────────────────┘
+73: 3. Sound, From First Principles
+74: A microphone is just a tiny drum skin. When a sound wave hits it, it vibrates back and forth, and the microphone converts 'how far the skin moved' into a number, thousands of times per second. That is literally all a digital audio file is: a very long list of numbers.
+75: This project standardises every audio file to SAMPLE_RATE = 22050 (audio_utils.py), meaning 22,050 of these snapshots are taken every second. Every dataset (Western pop songs, Carnatic recordings, whatever the user uploads) is resampled to this one rate so that the neural network always sees numbers on the same 'time ruler', no matter where the file came from.
+76: 3.1 Why We Can't Just Feed the Raw Waveform to a Neural Network
+77: A 4-minute song at 22,050 samples/second is about 5.3 million numbers long. A model can technically read that, but it is very hard for a network to spot 'this bit is a violin' just by staring at raw wiggles — pitch and timbre are hidden in the frequency content of the signal, not the raw amplitude. So before anything else happens, this project converts the waveform into a picture of its frequencies over time — the Spectrogram — which is exactly what Chapter 4 covers.
+79: 4. Turning Sound Into a Picture: STFT & Spectrograms
+80: Imagine sliding a small magnifying glass along the length of a song, and at every stop, asking 'what pitches are playing right now, and how loud is each one?' Write that answer down as a vertical strip of colour, then move the magnifying glass slightly forward and repeat. Line up all the strips side-by-side and you get a picture: the Spectrogram.
+81: 4.1 The Short-Time Fourier Transform (STFT)
+82: Formally, the STFT is computed with a window of N_FFT = 1024 samples (about 0.046 seconds of audio, since 1024 / 22050 ≈ 0.046s), hopping forward HOP_LENGTH = 256 samples between windows (audio_utils.py: stft()):
+83: def stft(waveform, n_fft=1024, hop_length=256):
+84:     window = torch.hann_window(n_fft)
+85:     return torch.stft(waveform, n_fft=n_fft,
+86:                        hop_length=hop_length,
+87:                        window=window, return_complex=True)
+89: Reading the resulting spectrogram:
+90: X-axis (Time): which magnifying-glass position we're looking at — moves left to right as the song plays.
+91: Y-axis (Frequency/Pitch): low pitches (bass, kick drum) near the bottom, high pitches (cymbals, violin harmonics) near the top.
+92: Colour/Brightness (Loudness): brighter = louder at that pitch, at that instant.
+93: A window function (the Hann window) is applied before each FFT slice to avoid 'spectral leakage' — abrupt cuts at the edges of a slice would otherwise smear energy across unrelated frequencies, the audio equivalent of a jagged tear versus a clean cut.
+94: 4.2 Inverse STFT (iSTFT): Turning the Picture Back Into Sound
+95: Everything the separator does happens on this 2D picture — masking, filtering, isolating. But the final output has to be audio a human can listen to. istft() (audio_utils.py) runs the process backwards, converting the filtered 2D spectrogram back into a 1D waveform:
+96: def istft(spec, n_fft=1024, hop_length=256, length=None):
+97:     window = torch.hann_window(n_fft)
+98:     return torch.istft(spec, n_fft=n_fft, hop_length=hop_length,
+99:                         window=window, length=length)
+101: 4.3 Log-Mel Spectrograms: Compressing to How Ears Actually Hear
+102: A raw STFT has 513 frequency bins (N_FFT/2 + 1), spaced linearly. But human hearing is not linear — we are far more sensitive to small pitch differences in low frequencies than in high ones. The Mel scale warps the frequency axis to match this, and waveform_to_mel() (audio_utils.py) compresses the 513 linear bins down to N_MELS = 128 ear-scaled bands, then applies a log transform to compress loudness the way human perception of volume is logarithmic, not linear:
+103: mel = mel_transform(waveform)          # (1, 128, frames)
+104: mel = torch.log1p(mel * 1e4)           # compress dynamic range
+106: This log-mel spectrogram — not the raw STFT — is exactly what feeds the Stage 1 Stem Detector (Chapter 7). It is smaller, more perceptually meaningful, and much cheaper for a classifier to learn from.
+108: 5. HPSS: Separating 'Singing' Sounds From 'Hitting' Sounds
+109: Harmonic-Percussive Source Separation (HPSS) sorts every sound in a spectrogram into two families based purely on its shape in the picture:
+110: Harmonic sounds (sustained melodies — violin, voice, guitar sustain) draw long horizontal lines across the spectrogram, because a held pitch stays at the same frequency over time.
+111: Percussive sounds (drum hits, plucks, mridangam strokes) draw tall vertical spikes, because a hit spreads energy across many frequencies for one brief instant, then vanishes.
+112: The project uses HPSS in two places inside pipeline.py's detect_stems(): once on the whole raw mixture (to get a track-level harmonic/percussive energy ratio), and once again on HDEMUCS's isolated 'other' stem specifically (to decide whether that 'other' energy is more likely a bowed violin, a plucked guitar, or a hammered piano). This is one of the three signals — alongside a spectral-flatness score and a spectral-centroid score — that lets the pipeline tell a violin apart from a guitar even though a plain 4-stem Demucs model lumps both into one undifferentiated 'other' bucket.
+114: 6. The Datasets: MUSDB18-HQ and Saraga Carnatic
+115: Two very different multitrack datasets are combined so the model learns both Western and Carnatic instrumentation, unified under the single 8-word vocabulary from Chapter 1.
+116: 6.1 MUSDB18-HQ (utils/musdb_dataset.py)
+117: 150 multitrack studio songs — Western pop/rock — each shipped as separate isolated stem files:
+119: MUSDB18's own 'other.wav' is an undefined mixture of guitar, piano, and synths — the code's comment is explicit that this track 'cannot be meaningfully named' on its own, so it is deliberately reused as a stand-in training target for both the guitar query and the piano query, rather than invented as a genuinely separate ground truth. This is a pragmatic dataset-engineering decision worth knowing for the viva: it's an approximation, not a claim that other.wav truly isolates a piano.
+120: The dataset preloads up to MAX_PRELOAD = 200 tracks fully into RAM at initialisation, rather than reading from disk on every training batch. The code's own comment estimates this at roughly 130 MB for 200 tracks at 22,050 Hz — trivial for a modern laptop, but it eliminates the disk I/O bottleneck that would otherwise make each batch take minutes instead of milliseconds.
+121: 6.2 Saraga 1.5 Carnatic Dataset (utils/saraga_dataset.py)
+122: Multitrack recordings of South Indian classical (Carnatic) music, with isolated channels for:
+124: Note that Saraga's Hindustani (North Indian classical) subset has no isolated stem files at all, so the code only uses it as extra mixture-only context, not as a training target — another realistic dataset limitation worth mentioning in a viva.
+125: Because no dataset ships a pre-mixed 'mixture.wav' matching this exact stem combination, the mixture is reconstructed on the fly by summing whichever stems are available for a given track (mix_stems(), audio_utils.py), which also peak-normalises the result so summing several loud stems together never clips above ±1.0.
+126: 6.3 Two Dataset Modes: 'separator' vs 'detector'
+127: Both dataset classes support two output modes, matching the two models they feed:
+128: separator mode: returns (mixture_segment, target_stem_segment, stem_label_index) — a fixed-length audio crop of the mixture, the matching isolated target, and which instrument index was queried.
+129: detector mode: returns (mel_spectrogram, presence_vector) — a log-mel spectrogram and an 8-dimensional binary vector marking which instruments are actually present in that clip.
+131: 7. Stage 1 — The Stem Detector (models/stem_detector.py)
+132: This is a lightweight CNN whose only job is: given a log-mel spectrogram, output a probability for each of the 8 instruments — 'is this present, yes or no, and how sure am I?' It never touches raw audio, only the picture built in Chapter 4.
+133: 7.1 Architecture
+134: Input: log-mel spectrogram (1, 128, T)
+136:   ConvBlock(1   → 32)   + MaxPool   128→64
+137:   ConvBlock(32  → 64)   + MaxPool    64→32
+138:   ConvBlock(64  → 128)  + MaxPool    32→16
+139:   ConvBlock(128 → 256)  + MaxPool    16→8
+140:         │
+141:         ▼
+142:   Global Average Pooling  (256, 8, 8) → (256, 1, 1)
+143:         │
+144:         ▼
+145:   Flatten → Linear(256→128) → ReLU → Dropout(0.3)
+146:         │
+147:         ▼
+148:   Linear(128 → 8)   ← raw logits, one per instrument
+150: Each ConvBlock is Conv2d → BatchNorm2d → ReLU → MaxPool2d(2) — a standard 'look at a small patch, normalise, keep only positive activations, then shrink the picture in half' building block, stacked 4 times so the network builds up from tiny local textures (an edge, a stripe) to whole-spectrogram patterns (a sustained violin line, a burst of drum hits).
+151: 7.2 Global Average Pooling (GAP) — Why It Matters
+152: 7.3 Dropout(0.3) and the Output Logits
+153: Dropout(0.3) randomly zeroes 30% of the neurons during training only, forcing the network to not over-rely on any single feature detector — a standard regularisation trick against overfitting on a modestly-sized multitrack dataset. The final layer outputs raw logits (unbounded real numbers) rather than probabilities directly, because the loss function used to train it — BCEWithLogitsLoss — is numerically more stable when it applies the sigmoid internally rather than the model doing it beforehand.
+154: 7.4 The Loss: Weighted Multi-Label BCE
+155: Since a song can contain several instruments at once (e.g. vocals AND guitar AND drums, all simultaneously true), this is a multi-label problem, not a multi-class one — the model can say 'yes' to more than one instrument. StemDetectorLoss wraps BCEWithLogitsLoss with a pos_weight vector that upweights the rarer Carnatic instruments:
+156: # [vocals, drums, bass, guitar, piano, violin, mridangam, ghatam]
+157: pos_weight = [1.0, 1.0, 1.0, 1.2, 1.2, 2.0, 2.0, 3.0]
+159: Because ghatam appears far less often across the combined dataset than vocals or drums, an unweighted loss would let the model 'cheat' by almost always predicting 'no ghatam' and still being right most of the time. The pos_weight = 3.0 for ghatam makes false negatives on that instrument three times as costly during training, pushing the model to actually learn its acoustic signature rather than ignore it.
+161: 8. Stage 2 — The Query-Conditioned Separator (models/separator.py)
+162: This is the heart of the project's novelty. A single network learns to isolate any of the 8 instruments — which one it isolates is decided at inference time by a query, not baked in at training time as 8 separate models.
+163: 8.1 The Query: An Integer Turned Into a 'Steering' Vector
+164: The user's request (e.g. 'violin') is first converted to its index in STEM_LABELS (e.g. 5), then passed through a learned embedding table:
+165: self.stem_embedding = nn.Embedding(num_stems=8, embed_dim=64)
+166: cond = self.stem_embedding(stem_idx)   # (B, 64)
+168: This turns a bare integer into a 64-number vector that the network learns to associate with 'what a violin sounds like' — conceptually similar to how a word embedding turns a word into a vector that captures its meaning.
+169: 8.2 FiLM: Feature-wise Linear Modulation
+170: class FiLM(nn.Module):
+171:     def __init__(self, cond_dim, num_channels):
+172:         self.fc = nn.Linear(cond_dim, num_channels * 2)  # -> [gamma, beta]
+174:     def forward(self, x, cond):
+175:         gamma, beta = self.fc(cond).chunk(2, dim=-1)
+176:         return gamma.unsqueeze(-1).unsqueeze(-1) * x \
+177:              + beta.unsqueeze(-1).unsqueeze(-1)
+179: FiLM is applied after every one of the 4 encoder blocks (film1 through film4), so the query influences the network at every scale of detail — from fine texture in early layers to coarse structure in deep layers — not just once at the end.
+180: 8.3 U-Net Architecture with Skip Connections
+181: Input: mixture magnitude spectrogram (1, F, T)
+183:   enc1 (1→32)  ──FiLM──┐
+184:   enc2 (32→64) ──FiLM──┼─┐
+185:   enc3 (64→128)──FiLM──┼─┼─┐
+186:   enc4 (128→256)─FiLM──┼─┼─┼─┐
+187:         │              │ │ │ │
+188:   Bottleneck (256→256) │ │ │ │
+189:         │              │ │ │ │
+190:   dec4 (256→128) ──────┘ │ │ │   (skip connection: concat with enc3)
+191:   dec3 (256→64)  ────────┘ │ │   (skip connection: concat with enc2)
+192:   dec2 (128→32)  ──────────┘ │   (skip connection: concat with enc1)
+193:   dec1 (64→32)   ────────────┘
+194:         │
+195:   output_conv (32→1) + Sigmoid  → mask ∈ [0, 1]
+197: 8.4 Soft Masking: The Output Is a Filter, Not a New Sound
+198: The network's final Sigmoid output is a mask of values between 0 and 1 for every time-frequency cell — not the separated audio itself. The actual separated magnitude is computed by multiplying: est_mag = mixture_mag × mask (separator.py: separate()).
+200: 9. Teaching the Models: The Training Scripts
+201: 9.1 training/train_detector.py
+202: Trains the Stage 1 CNN classifier end-to-end:
+203: Loss: BCEWithLogitsLoss (via StemDetectorLoss, with the pos_weight upweighting from Chapter 7).
+204: Learning-rate schedule: Cosine Annealing — the learning rate smoothly decays following a cosine curve from its initial value down toward zero over training, rather than dropping in sudden steps. This tends to help the model settle into a better minimum near the end of training instead of overshooting it.
+205: Each training step: sample a batch of (mel_spectrogram, presence_vector) pairs from the MUSDB18/Saraga dataset loaders in detector mode, compute logits, compute BCE loss, backpropagate.
+206: 9.2 training/train_separator.py
+207: Trains the Stage 2 U-Net + FiLM separator:
+208: Loss: Spectrogram L1 Loss — the mean absolute difference between the estimated magnitude spectrogram and the true isolated stem's magnitude spectrogram (spectrogram_l1_loss() in audio_utils.py, a thin wrapper around F.l1_loss).
+209: Vectorised GPU STFT — the STFT for an entire batch is computed on the GPU in one vectorised call rather than looping per-example on the CPU, which is what makes training fast enough to be practical on a single consumer GPU.
+210: Each training step: sample a batch of (mixture_segment, target_stem_segment, stem_idx) triples in separator mode, run STFT on both, predict a mask, compare masked-mixture magnitude to target magnitude with L1 loss.
+211: 9.3 Why Spectrogram L1 Loss Instead of Time-Domain MSE?
+213: 10. utils/ — The Toolbox Behind Everything
+214: 10.1 utils/audio_utils.py — Full Function Reference
+215: 10.2 utils/musdb_dataset.py and utils/saraga_dataset.py
+216: Covered in depth in Chapter 6 — these are the PyTorch Dataset classes that turn raw multitrack files on disk into the (mixture, target, label) or (mel, presence_vector) tuples the training scripts consume, in both 'separator' and 'detector' modes.
+218: 11. inference/pipeline.py — Where Everything Comes Together
+219: MusicSeparationPipeline is the class the Flask app talks to. It owns three models at once:
+220: detector — the custom StemDetector CNN from Chapter 7 (loaded from checkpoints/stem_detector_best.pt if present).
+221: separator — the custom QueryConditionedSeparator from Chapter 8 (checkpoints/separator_best.pt).
+222: hdemucs — torchaudio's pretrained HDEMUCS_HIGH_MUSDB bundle, a state-of-the-art off-the-shelf 4-stem separator (drums, bass, other, vocals), loaded automatically if torchaudio can fetch it.
+223: 11.1 Why a Second, Pretrained Model (HDEMUCS) Alongside the Custom One?
+224: The custom FiLM U-Net is the academic centrepiece of the project — it demonstrates query-conditioning from scratch. But it is trained on comparatively little data. HDEMUCS is Meta's production-grade model, trained on far more professionally mixed data, and gives noticeably cleaner audio for the four instruments it already knows (vocals, drums, bass, other). The pipeline is written to prefer HDEMUCS when it is available, both for stem detection (as a physically-grounded energy decomposition) and for separation, and to gracefully fall back to the fully custom U-Net if HDEMUCS cannot be loaded (e.g. no internet access to fetch pretrained weights).
+225: 11.2 detect_stems(): A Three-Signal Fusion
+226: This is the single most sophisticated function in the codebase, because plain classifier probabilities alone were not reliable enough — the code comments explicitly call out 'fix solo violin misclassification' as a target. Three independent signals are combined:
+227: Neural classifier pass: the audio is split into up to 6 overlapping 6-second windows (fixed_segment()), each converted to a log-mel spectrogram and scored by the Stage 1 CNN; the maximum probability across all windows is kept per instrument (so a violin solo appearing only in the middle of a song isn't averaged away by silent sections elsewhere).
+228: Physical energy decomposition via HDEMUCS: the mixture is run through HDEMUCS to get four physically real, isolated energy sources (drums, bass, 'other', vocals). Relative energy ratios are only trusted above hand-tuned thresholds (e.g. drums only count if they hold over 20% of total energy AND the track's overall percussive-energy ratio exceeds 18%) — this is the 'physical silence gating' that prevents faint bleed/friction noise from being misread as a real instrument.
+229: HPSS + spectral profiling on the 'other' energy specifically: harmonic ratio, spectral flatness, and spectral centroid together decide whether that leftover energy is more violin-like (high harmonicity, low flatness — a bowed, sustained tone), guitar-like (higher spectral centroid, plucked), or piano-like (lower centroid, hammered). The same trick — centroid thresholding on the drums energy — separately distinguishes a bright ghatam (clay pot, higher centroid) from a warmer mridangam (skin drum, lower centroid).
+230: The three signals are finally fused as 90% energy-based probability + 10% CNN probability, then passed through a set of silence gates that zero out any instrument whose underlying physical energy was below 5% — meaning the CNN alone can never single-handedly claim an instrument is present if there is no real physical energy backing that claim up. This is exactly the fix referenced in the project brief for the case where a solo violin recording was previously being misclassified: because HDEMUCS correctly reports near-zero drums/bass/vocals energy for a true solo violin, the gates now suppress those false positives even if the CNN's raw score for them was non-trivial.
+231: 11.3 separate(): High-Fidelity Extraction
+232: Mirrors the same preference order as detection — HDEMUCS chunked separation is used when available (_separate_hdemucs), falling back to the custom U-Net (_separate_custom_unet) otherwise. Both paths use 8-second Overlap-Add chunking, covered next in Chapter 12.
+234: 12. Overlap-Add Chunking: Handling Long Songs Safely
+235: A 4-minute song is far too large to run through a neural network in one pass on a laptop GPU with only 4GB of memory — the intermediate feature maps alone would exceed available memory and crash with a CUDA Out-of-Memory error. The fix is to slice the song into short chunks, process each chunk separately, and stitch the results back together seamlessly.
+236: 12.1 How It's Implemented
+237: Both _separate_hdemucs() and _separate_custom_unet() (pipeline.py) use the same recipe:
+238: Pick a chunk length (8 seconds of audio) and a hop length of exactly half the chunk (50% overlap).
+239: Pad the end of the audio so it divides evenly into hops.
+240: Slide the chunk window forward by one hop at a time; run the model on each chunk independently.
+241: Multiply each chunk's output by a Hann window before adding it into an output accumulator at the correct position — the Hann window naturally tapers to zero at both edges of the chunk and peaks at 1.0 in the middle, so overlapping chunks fade smoothly into each other instead of cutting abruptly.
+242: Track a separate weight accumulator (also built from the same Hann windows) and divide the summed output by the summed weight at the end, correcting for the fact that overlapping regions received contributions from two chunks while non-overlapping regions received one.
+243: chunk_len = SAMPLE_RATE * 8      # 8-second chunk
+244: hop_len   = chunk_len // 2       # 50% overlap
+245: window    = torch.hann_window(chunk_len)
+247: for start in range(0, total_padded - chunk_len + 1, hop_len):
+248:     chunk  = padded_wav[:, start:start+chunk_len]
+249:     output = model(chunk)                     # run the model on just this slice
+250:     out_acc[:, start:start+chunk_len]    += output * window
+251:     weight_acc[:, start:start+chunk_len] += window
+253: result = out_acc / weight_acc     # normalise overlapping regions
+255: This is precisely why the project brief describes it as '8-second chunks with 50% Hann-window cross-fading' — the exact same overlap-add-with-Hann-window pattern appears twice in the codebase: once for HDEMUCS's chunked run and once for the custom U-Net's chunked run, and once more (with a slightly smaller 6-second window) inside detect_stems() when scanning long songs for stem presence.
+257: 13. Loss Functions Recap
+259: 14. The Web App: ui/app.py and the Dashboard
+260: A small Flask server exposes the whole pipeline as a drag-and-drop dashboard at http://127.0.0.1:5000.
+261: 14.1 Routes (ui/app.py)
+262: 14.2 ui/static/main.js — The Frontend Logic
+263: Handles drag-and-drop file capture, posts the file to /detect, renders the returned probabilities as tag chips (one per instrument, coloured/sized by confidence), lets the user tick which stems they want, posts that selection to /separate, and finally renders an <audio> player pointing at /audio/<output_id> once separation completes.
+264: 14.3 A Practical Engineering Detail: The Model Is Loaded Once
+265: get_pipeline() (app.py) uses a module-level singleton: the very first request that needs the pipeline constructs it (loading all three models — detector, separator, HDEMUCS — into memory), and every subsequent request reuses the same in-memory instance. Without this, every single API call would re-load multi-hundred-megabyte model weights from disk, turning a sub-second inference call into a multi-second one.
+267: 15. Results & What +10.66 dB SI-SDR Actually Means
+268: SI-SDR (Scale-Invariant Signal-to-Distortion Ratio) measures, in decibels, how much of the separated signal's energy is 'genuinely the target instrument' versus 'leftover noise/interference from other instruments'. It is computed by si_sdr() (audio_utils.py):
+269: Zero-mean both the estimate and the target (remove any constant DC offset).
+270: Project the estimate onto the target direction — this finds the best possible scalar rescaling of the estimate that matches the target's energy, which is exactly what makes the metric 'scale-invariant': a correctly separated signal that just happens to be quieter or louder than the reference isn't penalised.
+271: Whatever is left over after removing that projection is treated as 'noise' (interference/artifacts).
+272: SI-SDR (dB) = 10 × log10( energy of the matched projection / energy of the leftover noise ).
+274: 16. Viva Voce: Top 10 Questions, Answered Simply
+275: Q1. Why soft masking instead of binary masking?
+276: A binary mask forces every time-frequency cell to a hard 0 or 1, which creates audible artefacts ('musical noise') wherever the model is genuinely uncertain — real instruments overlap in frequency constantly (e.g. a violin and a voice can share the same pitch range at the same instant). A soft mask (Sigmoid output, values anywhere in [0,1]) lets the network express that uncertainty gracefully, producing smoother, more natural-sounding separation.
+277: Q2. Why Spectrogram L1 loss instead of time-domain MSE?
+278: Raw waveform MSE punishes tiny, perceptually irrelevant timing shifts extremely harshly. Comparing magnitude spectrograms instead measures 'is the right amount of energy at the right pitch, at the right time', which tracks much closer to what a human ear actually judges as good or bad separation, and L1 (versus L2) doesn't let rare large errors dominate the loss.
+279: Q3. How did you fix the solo-violin misclassification issue?
+280: By adding a physical silence gate: the pipeline first measures HDEMUCS's real isolated energy for drums/bass/vocals. If that measured energy is below 5% of the total, those instruments' probabilities are forced near-zero regardless of what the CNN classifier alone predicted. A true solo violin recording has essentially no real drums/bass/vocals energy, so the gate reliably suppresses the CNN's occasional false positives on those labels.
+281: Q4. Why chunking with Overlap-Add instead of processing the whole song at once?
+282: A 4GB laptop GPU cannot hold the intermediate feature maps for a multi-minute song in one forward pass — it will run out of memory. Slicing into 8-second chunks keeps memory bounded regardless of song length. The 50% overlap plus Hann-window cross-fade specifically prevents audible seams/clicks at each chunk boundary that plain non-overlapping chunking would produce.
+283: Q5. Why 8 instruments instead of the standard 4?
+284: Standard 4-stem separation (vocals/drums/bass/other) has no way to answer a query for 'violin' or 'ghatam' specifically — those all live inside the undifferentiated 'other' bucket. Expanding to an 8-instrument vocabulary, combining MUSDB18-HQ (Western) with Saraga Carnatic (Indian classical), lets the same system serve both musical traditions with named, queryable targets.
+285: Q6. What is FiLM, and why not just train 8 separate models?
+286: FiLM (Feature-wise Linear Modulation) lets one shared network be steered toward different targets by generating a per-instrument scale (γ) and shift (β) from a learned query embedding, applied to the encoder's feature maps. Training 8 fully separate models would multiply parameter count and training time by 8x and would prevent any sharing of general 'what does music look like in a spectrogram' knowledge across instruments — FiLM lets that shared knowledge live in one backbone while only a small conditioning path changes per query.
+287: Q7. Why use HDEMUCS at all if you built a custom separator?
+288: HDEMUCS is a production-grade model pretrained on far more data than this project's custom U-Net, and gives cleaner results for instruments it already knows (vocals, drums, bass, guitar/piano bundled as 'other'). The pipeline prefers it when available and only falls back to the fully custom FiLM U-Net — the actual academic contribution of the project — when HDEMUCS isn't loadable, and always relies on the custom U-Net's true query-conditioning ability for genuinely novel Carnatic instrument queries HDEMUCS was never trained on.
+289: Q8. Why Global Average Pooling instead of a Flatten + big Linear layer?
+290: Flattening a spatial feature map directly forces a fixed input size and creates a massive linear layer whose weights depend on exactly which time-position a feature appeared at. GAP averages over space first, so the classifier becomes time/position-invariant (a violin note is recognised the same whether it happens early or late in the clip) and the number of parameters going into the classifier head is drastically smaller, reducing overfitting risk.
+291: Q9. What is skip connections' role in the U-Net separator?
+292: The encoder discards fine spatial/frequency detail as it downsamples to build a broad understanding. Skip connections carry the higher-resolution feature maps from each encoder level directly across to the matching decoder level, so the decoder can combine coarse 'what instrument' context with fine 'exactly which pixels' detail — without them, output masks come out noticeably blurrier at fine time/frequency boundaries.
+293: Q10. Why does the detector use log-mel spectrograms but the separator use raw STFT magnitude?
+294: The detector only needs to answer a classification question, so compressing to a smaller, perceptually-warped 128-band log-mel representation is a beneficial simplification. The separator, however, must reconstruct an accurate waveform, and mel compression is lossy/non-invertible in a simple way — so the separator instead operates on the full 513-bin linear STFT magnitude, which can be cleanly inverted back to audio via iSTFT using the retained mixture phase.
+296: 17. Conclusion & Future Work
+297: This project demonstrates that music source separation does not have to be limited to a fixed, closed set of instruments. By combining a lightweight multi-label detector, a query-conditioned FiLM U-Net, and a hybrid fusion of neural, physical-energy, and classical-DSP (HPSS/spectral) signals, the system extends separation to 8 named instruments spanning two very different musical traditions, and lets a user simply type or click which one they want back.
+298: Possible future extensions
+299: Expanding the vocabulary further (e.g. tabla, flute, veena) by sourcing additional multitrack datasets.
+300: Replacing the reused mixture phase with a learned phase-estimation module for even higher-fidelity reconstruction.
+301: Fine-tuning HDEMUCS itself (rather than only using it frozen) on the Saraga Carnatic data to give the production-grade backbone genuine Carnatic instrument awareness.
+302: Real-time streaming inference, rather than upload-then-wait, for live performance use cases.
+304: Appendix A: Full Project File Map
+305: utils/
+306:   audio_utils.py      Shared DSP helpers, STEM_LABELS vocabulary, SI-SDR
+307:   musdb_dataset.py     MUSDB18-HQ PyTorch Dataset
+308:   saraga_dataset.py    Saraga Carnatic PyTorch Dataset
+309: models/
+310:   stem_detector.py     Stage 1 — multi-label CNN classifier
+311:   separator.py          Stage 2 — FiLM-conditioned U-Net
+312: training/
+313:   train_detector.py    Trains the Stage 1 classifier
+314:   train_separator.py   Trains the Stage 2 separator
+315: inference/
+316:   pipeline.py           MusicSeparationPipeline — detect_stems() + separate()
+317: ui/
+318:   app.py                Flask routes: / , /detect , /separate , /audio/<id>
+319:   static/main.js        Frontend drag-drop, tag rendering, audio players
+320:   static/style.css      Dashboard styling
+321:   templates/index.html  Dashboard page template
+323: Appendix B: requirements.txt
+324: torch>=2.0.0
+325: torchaudio>=2.0.0
+326: librosa>=0.10.0
+327: soundfile>=0.12.0
+328: numpy>=1.24.0
+329: flask>=3.0.0
+330: mir_eval>=0.7
+331: musdb>=0.4.0
+332: scipy>=1.10.0
+333: matplotlib>=3.7.0
+334: tqdm>=4.65.0
+['What this document is\nA complete walkthrough of every idea, formula, dataset, and file in this project, written so that a first-time reader can understand it end-to-end and confidently explain it in a viva voce. Every technical term is paired with a plain-English analogy before the formal definition.']
+["Analogy\nStandard 4-stem separation is like a laundry sorter with only 4 baskets: Whites, Darks, Bass (heavy items), and 'Everything Else'. If you own a silk scarf, it goes into 'Everything Else' along with your gym socks — the sorter was never built to recognise silk as its own category."]
+['Why two separate models instead of one?\nDetection and separation are different jobs. Detection only needs to answer a yes/no question per instrument (cheap, fast, runs on the whole song). Separation has to reconstruct an entire waveform sample-by-sample for the instrument you asked for (expensive, slow, only needs to run on the stems you actually want). Splitting them means Stage 1 can scan a whole song in under a second, and Stage 2 only does the heavy lifting for the 1–2 instruments the user actually cares about.']
+["Waveform, in one sentence\nA waveform is a 1D list of numbers between -1.0 and +1.0, where each number is a snapshot of the speaker/microphone membrane's position at one instant — think of it as a seismograph reading for sound."]
+["Magnitude vs. Phase — an important subtlety\nThe STFT actually returns complex numbers, which carry two pieces of information: magnitude (how loud) and phase (the precise timing/alignment of the wave). This project's separator only learns to predict a magnitude mask — it reuses the original mixture's phase when reconstructing audio (see separate.py: 'phase = mix_spec / (mix_spec.abs() + 1e-8)'). This is a standard, well-tested simplification in source separation: phase is much harder to model, but reusing the mixture's phase introduces only small, usually inaudible artefacts."]
+["Analogy\nPicture a spreadsheet grid. A bowed violin note lights up one whole row (same pitch, held for a while). A drum hit lights up one whole column (all pitches, but only for an instant). HPSS is simply a filter that asks 'does this pixel belong more to a row-pattern or a column-pattern?' and sorts accordingly — no neural network required, this is classic signal processing (librosa.effects.hpss)."]
+['Stem file', 'Mapped to']
+['vocals.wav', 'vocals']
+['drums.wav', 'drums']
+['bass.wav', 'bass']
+['other.wav', 'guitar AND piano (reused for both queries)']
+['Unified stem', 'Source file pattern(s)']
+['vocals', '*.multitrack-vocal.mp3']
+['violin', '*.multitrack-violin.mp3']
+['mridangam', '*.multitrack-mridangam-left.mp3 + *.multitrack-mridangam-right.mp3 (summed)']
+['ghatam', '*.multitrack-ghatam.mp3']
+["Analogy\nAfter 4 rounds of shrinking, the picture is an 8×8 grid of 256 'feature channels'. GAP simply averages every channel down to one number, like asking '256 different judges, what's your overall score for this whole song clip?' instead of asking '256 judges, what's your score for grid cell (3,5) specifically?' This makes the model time-invariant — a violin sustained note is detected the same way whether it happens at the start or the end of the clip, because GAP throws away exactly where in time/frequency the feature fired and keeps only whether it fired at all."]
+["Analogy\nFiLM is like handing the same camera four different coloured filters and saying 'put on the orange filter if you're looking for a sunset, the blue filter if you're looking for the sky.' The camera's internal optics never change — only a cheap external filter is swapped — yet the photos it takes look completely different. FiLM does the same thing to the separator's internal feature maps: for each encoder level, the 64-number query vector is turned into a per-channel scale (γ, gamma) and shift (β, beta), and every feature map is transformed as output = γ × feature + β. Ask for 'violin' and γ/β steer the network's filters toward violin-shaped patterns; ask for 'ghatam' with the exact same weights, and different γ/β steer it toward ghatam-shaped patterns instead."]
+["Why skip connections?\nThe encoder repeatedly halves the spectrogram's resolution to build up a 'big picture' understanding, but in doing so it throws away fine detail — exact pitch boundaries, transient onsets. Skip connections carry that fine detail directly from each encoder level across to the matching decoder level (concatenated on the channel dimension), so the decoder can combine 'what instrument is this, broadly' (from the deep bottleneck) with 'exactly which pixels belong to it' (from the shallow skip). Without skips, masks tend to come out blurry at fine frequency/time detail."]
+["Analogy\nThink of masking as a photographic dimmer filter laid over the spectrogram picture. A cell the network is confident belongs to the violin gets a mask value near 1.0 (fully let through). A cell it's confident is drums gets a mask value near 0.0 (dimmed to near-silence). Cells it's unsure about get an in-between value — which is exactly why this is called soft masking, as opposed to binary masking, which would force every cell to either 0 or 1 with nothing in between."]
+["Common viva question\nA raw waveform MSE loss punishes any tiny timing misalignment extremely harshly, even if the reconstructed audio sounds perceptually identical — two sine waves one sample out of phase can have huge MSE but sound the same to a human ear. Spectrogram magnitude loss compares 'how much energy is at this pitch, at this time' instead of raw sample-by-sample amplitude, which is far closer to how a listener actually judges separation quality, and L1 (absolute difference) is additionally more robust to occasional loud outlier bins than L2/MSE would be, since it doesn't square (and therefore massively amplify) large errors."]
+['Function', 'What it does']
+['load_audio()', 'Loads a .wav/.mp3, converts to mono, resamples to 22,050 Hz. Supports partial loading (offset_sec, max_duration_sec) so a multi-hour recording never has to be fully loaded into RAM at once.']
+['save_audio()', 'Clamps a waveform to [-1, 1] and writes it to a .wav file.']
+['mix_stems()', 'Sums a list of stem waveforms into one mixture, then peak-normalises to avoid clipping.']
+['get_mel_transform() / waveform_to_mel()', 'Builds and applies the log-mel spectrogram transform (128 mel bands, log1p-compressed).']
+['compute_rms_energy() / stem_is_present()', "Measures how loud a waveform is (root-mean-square) and thresholds it to decide if a stem is audibly 'there' at all."]
+['stft() / istft()', 'Forward and inverse Short-Time Fourier Transform (Chapter 4).']
+['si_sdr() / si_sdr_loss()', 'Scale-Invariant Signal-to-Distortion Ratio — the evaluation metric (Chapter 15) and its negative, usable as a loss.']
+['spectrogram_l1_loss()', "L1 loss between two magnitude spectrograms — the separator's training loss (Chapter 9)."]
+['random_segment() / fixed_segment()', 'Crop a fixed-length window from a (possibly shorter) waveform, zero-padding if needed.']
+["Analogy\nImagine painting a very long mural, but your paint tray only covers a 2-metre stretch at a time. If you simply painted 2m, stopped, then painted the next 2m starting exactly where the last one ended, you'd get a visible seam at every joint. Overlap-Add instead re-paints the last half-metre of the previous section again as part of the next section, blending the two coats together with a soft fade (a Hann window) so the seam disappears entirely."]
+['Loss', 'Used for', 'Why this one']
+['Weighted Multi-Label BCE\n(BCEWithLogitsLoss + pos_weight)', 'Training the Stage 1 Stem Detector', 'Handles multiple simultaneous true labels per clip; pos_weight compensates for rare instruments (ghatam, mridangam, violin) being underrepresented.']
+['Spectrogram L1 Loss', 'Training the Stage 2 Separator', 'Compares perceptually meaningful frequency-energy content rather than raw waveform samples; L1 is robust to occasional large errors.']
+['SI-SDR\n(Scale-Invariant SDR)', 'Evaluating separation quality (not used to train — used to measure results)', "Measures isolation quality in dB while being invariant to overall volume scaling, so a correctly separated but quieter signal isn't unfairly penalised."]
+['Route', 'Method', 'Purpose']
+['/', 'GET', 'Serves the main dashboard page (templates/index.html), passing in the full STEM_LABELS list so the frontend knows which tags to offer.']
+['/detect', 'POST', 'Accepts an uploaded audio file, saves it under a random UUID, runs pipeline.detect_stems(), and returns detected stems + per-instrument probabilities as JSON.']
+['/separate', 'POST', "Accepts a JSON body naming a previously uploaded file and the user's selected stems, runs pipeline.separate(), and returns an output_id."]
+['/audio/<output_id>', 'GET', 'Streams the separated .wav file back to the browser for playback, after sanitising the id to only alphanumeric characters and hyphens (a defensive check against path-traversal attacks).']
+['Reading the number\nHigher is better. +10.66 dB SI-SDR (as quoted in the project brief for the trained separator) roughly means the useful, correctly-isolated signal carries about 11.6× more energy than the residual noise/bleed left behind (since a 10 dB gap is a 10x ratio, plus a bit more for the extra 0.66 dB) — a solidly audible, usable isolation, though still short of the near-silent bleed a top studio-grade commercial separator would achieve on a purely 4-stem Western pop task.']

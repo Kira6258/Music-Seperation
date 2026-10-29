@@ -1,0 +1,97 @@
+# =============================================================================
+# .gitignore - Query-Conditioned Multi-Source Music Separation System
+# =============================================================================
+
+# --- Python & Bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# --- Virtual Environments ---
+.env
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- Deep Learning Model Checkpoints & Large Weights (>100MB exceeds GitHub limits) ---
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.onnx
+*.safetensors
+*.h5
+checkpoints/*.pt
+checkpoints_backup_*/
+backup_before_*/
+
+# Preserve checkpoint directory and documentation
+!checkpoints/.gitkeep
+!checkpoints/README.md
+
+# --- Datasets & Audio / Video Media (Multi-Gigabyte Datasets) ---
+datasets/*
+!datasets/.gitkeep
+!datasets/README.md
+!datasets/custom_mixes/
+!datasets/custom_mixes/.gitkeep
+
+# Exclude audio and video formats everywhere
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.aac
+*.wma
+*.aiff
+*.aif
+*.mp4
+*.mkv
+*.avi
+*.mov
+
+# Exclude archive files
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# --- Runtime Outputs & Temporary Files ---
+outputs/*
+!outputs/.gitkeep
+output/uploads/
+output/*.wav
+output/*.mp3
+scratch/*
+!scratch/.gitkeep
+temp/
+tmp/
+*.tmp
+
+# --- IDEs, Editors & OS Specific ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs & Test Artifacts ---
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
